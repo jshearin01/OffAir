@@ -1,0 +1,9 @@
+John: Good morning everyone, thanks for joining the OffAir review. Today is Friday the seventh of November, and we have three items on the agenda.
+Priya: Thanks John. First item is the recording test. I recorded a five minute Teams call yesterday and both audio tracks came through clearly.
+Marcus: Second item is transcription. The small Whisper model should handle a thirty minute meeting in about fifteen minutes on a laptop with no graphics card.
+John: That sounds reasonable. The third item is speaker names. Once we name Priya and Marcus in two calls, the system should suggest those names automatically next time.
+Priya: Exactly. And the export needs to be clean markdown, with timestamps and speaker names, so we can paste it straight into our notes.
+Marcus: One more thing. The budget for the pilot is twelve thousand dollars, and the deadline is the fifteenth of December. Does that still work for everyone?
+John: Yes, December fifteenth works for me. Priya, can you send the updated timeline by Monday morning?
+Priya: I will send it by nine o clock on Monday. Marcus, please confirm the hardware list by the same day.
+Marcus: Confirmed, I will confirm the hardware list on Monday. Thanks everyone, see you next week.

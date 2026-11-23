@@ -1,0 +1,99 @@
+# OffAir Phase 1 — Windows 10/11, Python 3.10+, CPU-only, no CUDA/GPU.
+# Install in a virtual environment:
+#   python -m venv .venv
+#   .venv\Scripts\activate        (Windows)
+#   pip install -r requirements.txt
+#
+# pyaudiowpatch is Windows-only (WASAPI). It will not install / import on
+# Linux or macOS — that is expected; the code degrades gracefully there
+# and the unit tests use fake audio sources instead.
+PyQt6>=6.5
+pyaudiowpatch>=0.2.12.8; sys_platform == "win32"
+# Per-app capture (Nov 8 2026): pycaw supplies the battle-tested COM
+# definitions (IAudioClient, WAVEFORMATEX, audio-session enumeration)
+# for the WASAPI process-loopback backend in
+# app/audio/perapp_capture.py. Windows-only, pure Python (comtypes
+# comes in as pycaw's dependency). The app runs without it — the
+# backend reports "unavailable" and DualCapture falls back to
+# system-wide loopback (see per_app_capture_available()).
+pycaw==20260927; sys_platform == "win32"
+# Outlook calendar linking (Nov 10 2026, Feature 3): pywin32
+# supplies win32com.client for the read-only COM lookup in
+# app/calendar/outlook.py (default Calendar folder, Restrict
+# query, GetItemFromID + Display). Windows-only; the module
+# degrades gracefully without it — outlook_available() reports
+# the missing dependency and sessions simply have no calendar
+# link (see docs/OUTLOOK_LINKING.md).
+pywin32>=306; sys_platform == "win32"
+# Phase 1 (Linux) — Linux capture backend (OPTIONAL). sounddevice /
+# PortAudio is only needed to record on Linux; the app runs without
+# it (capture reports "unavailable" with install guidance) and it is
+# never imported at module load — see app/platform_info.py. The
+# sys_platform marker below mirrors pyaudiowpatch above: it installs
+# on Linux only, never on Windows. On Linux it ALSO needs the system
+# PortAudio library, which pip cannot provide:
+#   Debian/Ubuntu: sudo apt install libportaudio2
+#   Fedora:        sudo dnf install portaudio
+# Without that library, `import sounddevice` fails with
+# "PortAudio library not found" and OffAir falls back to the
+# no-capture state with the same guidance.
+sounddevice>=0.5; sys_platform == "linux"
+soundfile>=0.12
+numpy>=1.26
+psutil>=5.9
+# Phase 2 — transcription (CPU-only). faster-whisper pulls in ctranslate2;
+# it does NOT pull torch/CUDA.
+faster-whisper>=1.1
+# PyAV pin: faster-whisper 1.2.1 declares only `av>=11`, but its
+# decode_audio() calls av.open(..., metadata_errors="ignore"), a kwarg
+# PyAV removed in v15 — with av>=15 every transcribe() call fails with
+# TypeError. Pin to the last known-good major line (13.x installs a
+# wheel here; 14.4.0 tried to build from source and failed on this VM).
+av>=11,<15
+# Phase 3 — full diarization (CPU-only). pyannote.audio pulls in torch
+# (CPU wheel) and is a large install (~1 GB with models cached later);
+# it is ONLY needed for full multi-speaker diarization. The simple
+# "You vs Remote" mode needs no pyannote, no torch, and no token.
+# No CUDA packages are listed anywhere in this file — torch installs
+# as the CPU-only wheel by default from PyPI.
+pyannote.audio>=3.1
+# Phase 4 — persistent speaker learning (CPU-only). The production
+# embedding backends after the Nov 8 2026 ECAPA swap are:
+# * ONNX ECAPA (default where torch is absent): speakeronnx +
+#   onnxruntime, WeSpeaker ECAPA-TDNN-512, 192-dim, CC-BY-4.0,
+#   public weights, no Hugging Face token. Light install, no
+#   torch. Verified working on this VM (see PHASE4.md).
+# * SpeechBrain ECAPA: speechbrain/spkrec-ecapa-voxceleb,
+#   192-dim, Apache 2.0, public weights, no token — see
+#   requirements-speechbrain.txt (torch + speechbrain, installed
+#   separately; NOT in this file, so a plain `pip install -r
+#   requirements.txt` never pulls torch).
+# The old production backend, pyannote/embedding, is still
+# installed with pyannote.audio above (needed for Phase 3 full
+# diarization) but is opt-in only for embeddings now. The
+# built-in fallback spectral extractor needs no extra dependency.
+onnxruntime>=1.19
+speakeronnx>=0.0.1
+# certifi: the sherpa model downloader (app/diarization/sherpa.py
+# _ssl_context) verifies GitHub-release downloads against certifi's
+# CA bundle when it is installed, falling back to the default
+# context when it is not. Declared explicitly (tiny, pure Python)
+# so the fix does not depend on it arriving transitively via
+# huggingface_hub/requests — a bare Windows install can have a
+# stale system cert store that fails github.com's chain (verified
+# Nov 9 2026 on the Windows VM: CERTIFICATE_VERIFY_FAILED with the
+# default context, verified fine with certifi's bundle).
+certifi
+# Phase 7 — MCP server (read-only, local, stdio; see docs/MCP.md).
+# The official MCP Python SDK (v2: FastMCP was renamed MCPServer).
+# Pure Python plus binary wheels for pydantic-core / cryptography
+# (both ship Windows + manylinux wheels — no compiler needed).
+# Only needed for `python main.py --mcp` / `offair-mcp`; the rest
+# of the app runs without it, and app/mcp/tools.py never imports it.
+mcp[cli]>=2.0  # [cli] extra: OffAir.spec collect_all("mcp") imports mcp.cli, which needs typer — plain mcp>=2.0 fails the PyInstaller build (first 1.0.2 build, Nov 11 2026)
+# Phase 6 — sherpa diarization mode (DEFAULT since Nov 8 2026).
+# sherpa-onnx is the default diarization backend, installed by this
+# file — not an optional extra. CPU-only (ONNX), no torch, no
+# Hugging Face token; the diarization models (~33 MB) download once
+# on first use from public GitHub releases.
+sherpa-onnx>=2.0

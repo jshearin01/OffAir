@@ -1,0 +1,240 @@
+"""Recording sessions: one folder per recording, with metadata.json.
+
+Layout (PRD Phase 1)::
+
+    <output_root>/YYYY-MM-DD_HH-MM-SS_<app-slug>/
+        mic.wav
+        system.wav
+        combined.wav
+        metadata.json
+
+``metadata.json`` is written at session creation and updated on stop, so
+a crash still leaves a folder that says what it is and when it started.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+from app.storage.source import (
+    SOURCE_OTHER,
+    SOURCE_SOLO,
+    backfill_source,
+    normalize_source,
+)
+
+logger = logging.getLogger("offair.storage")
+
+MIC_FILE = "mic.wav"
+SYSTEM_FILE = "system.wav"
+COMBINED_FILE = "combined.wav"
+METADATA_FILE = "metadata.json"
+#: Progressive live transcript (Nov 19 2026): written after every
+#: live chunk during recording, deleted after a successful Stop
+#: finalize. It is the crash-recovery record only — the retention
+#: "has transcript" check must keep requiring transcript.json.
+TRANSCRIPT_LIVE_FILE = "transcript-live.json"
+
+
+def slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "session"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _write_metadata(session_dir: Path, metadata: dict) -> Path:
+    path = session_dir / METADATA_FILE
+    path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return path
+
+
+def create_session(output_root: str | Path, app_name: str = "Teams", *,
+                   mode: str = "system-loopback-fallback",
+                   sample_rate: int = 48000, channels: int = 1,
+                   devices: dict | None = None,
+                   warning: str | None = None,
+                   source: str | None = None,
+                   source_detail: str | None = None) -> Path:
+    """Create a new session folder and its initial metadata.json.
+
+    Folder name is ``YYYY-MM-DD_HH-MM-SS_<slug>`` (local time); a numeric
+    suffix is added if that name already exists. Returns the folder path.
+
+    ``source`` / ``source_detail`` are the recording source (see
+    :mod:`app.storage.source`): the caller passes the resolved value
+    from :func:`app.storage.source.resolve_recording_source` —
+    detection from the capture target, or the user's manual
+    override. When omitted the source is ``"other"``: never a
+    guess. Raises ValueError for a source outside the enum.
+    """
+    if source is not None and normalize_source(source) is None:
+        raise ValueError(
+            f"unknown recording source {source!r}")
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    base = f"{stamp}_{slugify(app_name)}"
+    session_dir = root / base
+    counter = 1
+    while session_dir.exists():
+        counter += 1
+        session_dir = root / f"{base}-{counter:02d}"
+    session_dir.mkdir(parents=True)
+    metadata = {
+        "session_id": session_dir.name,
+        "app_name": app_name,
+        "mode": mode,
+        "status": "recording",
+        "start_time": _now_iso(),
+        "end_time": None,
+        "duration_seconds": None,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "devices": devices or {},
+        "warning": warning,
+        # Recording source (app.storage.source): what this session
+        # is a recording of. "other" when unknown — never guessed.
+        "source": source if source is not None else SOURCE_OTHER,
+        "source_detail": source_detail or "",
+        "pause_policy": "discard",  # audio received while paused is dropped
+        "files": {
+            "mic": MIC_FILE,
+            "system": SYSTEM_FILE,
+            "combined": COMBINED_FILE,
+        },
+    }
+    _write_metadata(session_dir, metadata)
+    logger.info("Session created: %s", session_dir)
+    return session_dir
+
+
+def create_dictation_session(output_root: str | Path, *,
+                           app_name: str = "Dictation",
+                           mode: str = "system-loopback-fallback",
+                           sample_rate: int = 48000, channels: int = 1,
+                           devices: dict | None = None,
+                           warning: str | None = None,
+                           source_detail: str | None = None) -> Path:
+    """Create a dictation session: mic-only, ``source="solo"``.
+
+    Dictation reuses the ordinary session / transcribe / cleanup
+    path. The only things that mark it are its metadata:
+    ``"source": "solo"`` and ``"dictation": true``. The primary
+    readable artifact is the deterministic cleaned note
+    (``transcript-clean.txt``, from :func:`app.transcription.
+    cleanup.clean_session`). See docs/RECORDING_SOURCE.md for the
+    full session shape and the spoken-side-only wording.
+    """
+    session_dir = create_session(
+        output_root, app_name=app_name, mode=mode,
+        sample_rate=sample_rate, channels=channels, devices=devices,
+        warning=warning, source=SOURCE_SOLO,
+        source_detail=source_detail)
+    update_metadata(session_dir, dictation=True)
+    return session_dir
+
+
+def is_dictation_session(session_dir: str | Path) -> bool:
+    """Whether a session is a dictation session (``dictation: true``).
+
+    A ``"solo"`` source alone does not make a session dictation —
+    only the flag does. Returns False when the session has no
+    metadata.json.
+    """
+    try:
+        metadata = load_metadata(session_dir, backfill=False)
+    except FileNotFoundError:
+        return False
+    return metadata.get("dictation") is True
+
+
+def load_metadata(session_dir: str | Path, *,
+                  backfill: bool = True) -> dict:
+    """Load metadata.json for a session. Raises FileNotFoundError if absent.
+
+    With ``backfill=True`` (the default) a session recorded before
+    the ``source`` field existed gets one derived from its stored
+    ``app_name`` where that maps cleanly, else ``"other"`` (see
+    :func:`app.storage.source.backfill_source`), and the derived
+    value is written back into metadata.json. The write happens
+    only when the source is missing/invalid, so it is idempotent
+    — a second load finds the source present and writes nothing.
+    A session that already has a valid source is left alone.
+    Pass ``backfill=False`` for a pure read with no side effects.
+    """
+    path = Path(session_dir) / METADATA_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"No metadata.json in {session_dir}")
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    if backfill:
+        fields = backfill_source(metadata)
+        if fields is not None:
+            metadata.update(fields)
+            _write_metadata(Path(session_dir), metadata)
+    return metadata
+
+
+def set_session_source(session_dir: str | Path, source: str,
+                       source_detail: str | None = None) -> dict:
+    """Change a session's recording source (the edit path).
+
+    Writes ``source`` (+ ``source_detail`` when given) into the
+    session's metadata.json and returns the updated metadata.
+    Raises ValueError for a source outside the enum — the stored
+    value is never an invented one.
+    """
+    if normalize_source(source) is None:
+        raise ValueError(
+            f"unknown recording source {source!r}")
+    fields: dict = {"source": source}
+    if source_detail is not None:
+        fields["source_detail"] = source_detail
+    return update_metadata(session_dir, **fields)
+
+
+def update_metadata(session_dir: str | Path, **fields) -> dict:
+    """Merge ``fields`` into the session's metadata.json and return it."""
+    session_dir = Path(session_dir)
+    metadata = load_metadata(session_dir)
+    metadata.update(fields)
+    _write_metadata(session_dir, metadata)
+    return metadata
+
+
+def finalize_session(session_dir: str | Path, *,
+                     duration_seconds: float | None = None,
+                     status: str = "completed") -> dict:
+    """Mark a session finished: end time, duration, and which files exist."""
+    session_dir = Path(session_dir)
+    files_present = {
+        name: (session_dir / filename).exists()
+        for name, filename in
+        (("mic", MIC_FILE), ("system", SYSTEM_FILE), ("combined", COMBINED_FILE))
+    }
+    return update_metadata(
+        session_dir,
+        status=status,
+        end_time=_now_iso(),
+        duration_seconds=(round(float(duration_seconds), 2)
+                          if duration_seconds is not None else None),
+        files_present=files_present,
+    )
+
+
+def list_sessions(output_root: str | Path) -> list[Path]:
+    """Session folders under ``output_root`` that contain metadata.json.
+
+    Newest first (folder names sort chronologically, so reverse sort works).
+    """
+    root = Path(output_root)
+    if not root.exists():
+        return []
+    sessions = [p for p in root.iterdir()
+                if p.is_dir() and (p / METADATA_FILE).exists()]
+    return sorted(sessions, reverse=True)

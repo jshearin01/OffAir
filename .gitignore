@@ -1,0 +1,22 @@
+# OffAir — never commit recordings, audio, or local environment state.
+recordings/
+*.wav
+*.mp3
+*.flac
+*.ogg
+__pycache__/
+*.py[cod]
+.venv/
+.venv-phase2/
+venv/
+.env
+*.log
+.pytest_cache/
+.pytest-tmp/
+.pytest-tmp-qt/
+installer/*.exe
+.rdp-password
+dist/
+build/
+*.egg-info/
+# NOTE: PRD.md and README.md are intentionally NOT ignored.

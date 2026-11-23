@@ -1,0 +1,26 @@
+# OffAir — OPTIONAL: SpeechBrain ECAPA embedding backend.
+#
+# Install separately, only on a machine where torch installs:
+#   pip install -r requirements-speechbrain.txt
+#
+# This is NOT in requirements.txt on purpose: a plain install
+# must never pull torch (the ONNX ECAPA backend in
+# requirements.txt is the light, torch-free production default).
+# SpeechBrain ECAPA (speechbrain/spkrec-ecapa-voxceleb, 192-dim,
+# Apache 2.0, public weights, no Hugging Face token) is the
+# production backend John chose in the Nov 8 2026 ECAPA swap; it
+# is used automatically when torch + speechbrain import
+# ("auto" embedding backend), and can be pinned with
+# embedding_backend = "speechbrain-ecapa" in the settings.
+#
+# Known blocker on this Linux VM (do not loop-retry): pip
+# installing torch from PyPI stalls at 261.6 MB into the 539 MB
+# CPU wheel (files.pythonhosted.org), and ~600 MB free RAM would
+# likely OOM on the 1-2 GB torch + SpeechBrain stack anyway.
+# The PyTorch CDN (download.pytorch.org/whl/cpu) was fast in a
+# 50 MB probe — if PyPI stalls, try:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install speechbrain
+# First real run of this backend is on the target laptop.
+torch
+speechbrain>=1.0

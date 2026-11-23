@@ -1,0 +1,38 @@
+# OffAir — dev-install metadata (console script only).
+#
+# The app itself is distributed as a PyInstaller bundle (see
+# OffAir.spec / docs/PACKAGING.md), not as a pip package — this file
+# exists only so a dev install can provide the `offair-mcp`
+# console script:
+#
+#     pip install -e .
+#     offair-mcp --output-dir ~/OffAir/recordings
+#
+# It deliberately does NOT declare the runtime dependencies:
+# install those from requirements.txt as usual.
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "offair"
+version = "1.0.1"
+description = "OffAir — local meeting recorder, transcriber and speaker learning"
+requires-python = ">=3.10"
+
+[project.scripts]
+offair-mcp = "app.mcp.server:main"
+
+[tool.setuptools]
+packages = [
+    "app",
+    "app.audio",
+    "app.diarization",
+    "app.exports",
+    "app.mcp",
+    "app.nearlive",
+    "app.speakers",
+    "app.storage",
+    "app.transcription",
+    "app.ui",
+]
