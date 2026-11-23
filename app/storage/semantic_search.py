@@ -595,6 +595,26 @@ class SemanticSearchIndex:
                            session_dir, exc_info=True)
             return None
 
+    def remove_session(self, session_id: str) -> int:
+        """Delete every index row for ``session_id`` (chunks + state).
+
+        Used by session delete: a deleted session must leave no
+        search entries behind. Returns the rows removed. A missing
+        index file is a no-op (0) — no empty database is created
+        just to delete from it.
+        """
+        if not self.db_path.exists():
+            return 0
+        conn = self._connect()
+        chunks = conn.execute(
+            "DELETE FROM chunks WHERE session_id = ?",
+            (session_id,)).rowcount
+        state = conn.execute(
+            "DELETE FROM index_state WHERE session_id = ?",
+            (session_id,)).rowcount
+        conn.commit()
+        return chunks + state
+
     # ------------------------------------------------------------ indexing ---
     def index_session(self, session_dir: str | Path) -> int:
         """Index one session. Returns chunks indexed (0 = skipped).

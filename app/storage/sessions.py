@@ -238,3 +238,114 @@ def list_sessions(output_root: str | Path) -> list[Path]:
     sessions = [p for p in root.iterdir()
                 if p.is_dir() and (p / METADATA_FILE).exists()]
     return sorted(sessions, reverse=True)
+
+
+# ------------------------------------------------------- display naming ------
+
+def is_calendar_linked(metadata: dict) -> bool:
+    """Whether ``metadata`` ties the session to an Outlook item.
+
+    Linked means a ``calendar_event`` dict was stored by Outlook
+    linking (see :mod:`app.calendar.outlook`). A stored ``null``
+    (match attempted, nothing found) or a missing key means the
+    session is NOT tied to an Outlook item and may be renamed.
+    """
+    event = metadata.get("calendar_event")
+    return isinstance(event, dict) and bool(event)
+
+
+def session_display_name(metadata: dict) -> str:
+    """The one display-name rule for a session.
+
+    An Outlook-linked session IS its calendar event's subject —
+    always, with no rename. Otherwise the user-set custom name
+    (``custom_name`` in metadata.json), or the derived default:
+    ``"<app> recording"`` from the recorded app name. Every view
+    (Library list, Session view, search) resolves the name through
+    this function so the views can never disagree.
+    """
+    if is_calendar_linked(metadata):
+        event = metadata["calendar_event"]
+        subject = str(event.get("subject") or "").strip()
+        return subject if subject else "(untitled event)"
+    custom = str(metadata.get("custom_name") or "").strip()
+    if custom:
+        return custom
+    app_name = str(metadata.get("app_name") or "").strip()
+    return f"{app_name} recording" if app_name else "Recording"
+
+
+def rename_session(session_dir: str | Path, name: str) -> dict:
+    """Set a session's custom display name.
+
+    Writes ``custom_name`` into metadata.json and returns the
+    updated metadata. Raises ValueError for a blank name and for
+    an Outlook-linked session — a linked session's name is its
+    calendar event's subject and cannot be renamed. Renaming
+    never touches the folder name, the calendar link, or any
+    other session data.
+    """
+    session_dir = Path(session_dir)
+    metadata = load_metadata(session_dir, backfill=False)
+    if is_calendar_linked(metadata):
+        raise ValueError(
+            "This session is named by its Outlook calendar event "
+            "and cannot be renamed.")
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        raise ValueError("A session name cannot be blank.")
+    return update_metadata(session_dir, custom_name=cleaned)
+
+
+def delete_session(session_dir: str | Path, *,
+                   live_dir: str | Path | None = None) -> Path:
+    """Permanently delete one session and all of its artifacts.
+
+    Removes the session folder (audio, transcripts, diarization,
+    speaker renames/suggestions, bookmarks, metadata) plus the
+    session's rows in the shared search index (``search_index.db``)
+    and the voice-embedding samples it contributed to
+    ``speakers.db``. Speaker identities themselves are never
+    deleted — they are cross-session — and other sessions are
+    untouched. Raises FileNotFoundError when ``session_dir`` is
+    not a session folder, and RuntimeError when it is the live
+    recording directory (``live_dir``) — a live session is never
+    deleted. The shared-store rows go first so a failed folder
+    removal can simply be retried.
+    """
+    from app.speakers.database import SPEAKERS_DB_FILE, SpeakerDatabase
+    from app.storage.semantic_search import (
+        SEMANTIC_INDEX_FILE,
+        SemanticSearchIndex,
+    )
+
+    session_dir = Path(session_dir)
+    if not (session_dir / METADATA_FILE).exists():
+        raise FileNotFoundError(
+            f"No session folder (no metadata.json): {session_dir}")
+    if live_dir is not None:
+        try:
+            if Path(live_dir).resolve() == session_dir.resolve():
+                raise RuntimeError(
+                    "Cannot delete the session being recorded — "
+                    "stop the recording first.")
+        except OSError:
+            pass
+    session_id = session_dir.name
+    output_root = session_dir.parent
+    index_path = output_root / SEMANTIC_INDEX_FILE
+    if index_path.exists():
+        removed = SemanticSearchIndex(output_root).remove_session(
+            session_id)
+        logger.info("Deleted %d search-index row(s) for %s",
+                    removed, session_id)
+    speakers_path = output_root / SPEAKERS_DB_FILE
+    if speakers_path.exists():
+        with SpeakerDatabase(speakers_path) as db:
+            removed = db.delete_embeddings_for_session(session_id)
+        logger.info("Deleted %d speaker sample(s) for %s",
+                    removed, session_id)
+    import shutil
+    shutil.rmtree(session_dir)
+    logger.info("Session deleted: %s", session_dir)
+    return session_dir

@@ -5,7 +5,8 @@ No session format changes: this reads the Phase 1 layout
 (``metadata.json`` + ``transcript.txt`` / ``transcript.json`` +
 ``speakers.json`` / ``diarization.json``) exactly as written by
 Phases 1–4. Search is a plain case-insensitive substring match
-over transcript text, speaker names, session id and app name.
+over transcript text, speaker names, session id, display name
+and app name.
 :func:`hybrid_search` adds a meaning-based layer on top of it
 (see :mod:`app.storage.semantic_search`): exact substring hits
 are boosted so they rank first, and semantic hits catch
@@ -40,8 +41,10 @@ from app.storage.semantic_search import (
 )
 from app.storage.sessions import (
     METADATA_FILE,
+    is_calendar_linked,
     list_sessions,
     load_metadata,
+    session_display_name,
 )
 from app.storage.source import (
     SOURCES,
@@ -86,6 +89,16 @@ class SessionSummary:
     # Pinned (starred) sessions sort first in the library
     # (metadata.json "pinned": true, via update_metadata).
     pinned: bool = False
+    # Display name, resolved by the one rule in
+    # app.storage.sessions.session_display_name: the Outlook
+    # event's subject when linked, else the custom name, else the
+    # derived "<app> recording" default. calendar_event itself is
+    # NOT stored here — summaries stay light; the link is read
+    # from metadata.json when needed.
+    display_name: str = ""
+    # Whether the session is tied to an Outlook item (its name is
+    # the event subject and it cannot be renamed).
+    calendar_linked: bool = False
 
     @property
     def source_label(self) -> str:
@@ -131,7 +144,8 @@ class SessionSummary:
         if self.has_llm_export:
             flags.append("LLM export")
         flag_text = f" [{', '.join(flags)}]" if flags else ""
-        return (f"{self.session_id}{duration}{speakers}{flag_text}"
+        name = self.display_name or self.session_id
+        return (f"{name}{duration}{speakers}{flag_text}"
                 f" — {self.source_label}")
 
 
@@ -178,7 +192,56 @@ def summarize_session(session_dir: str | Path) -> SessionSummary:
         has_llm_export=(session_dir / "transcript-llm.md").exists(),
         has_suggestions=(session_dir / "speaker_suggestions.json").exists(),
         pinned=bool(metadata.get("pinned", False)),
+        display_name=session_display_name(metadata),
+        calendar_linked=is_calendar_linked(metadata),
     )
+
+
+def row_date_text(summary: SessionSummary) -> str:
+    """The date line-1 shows for a session, in local time.
+
+    The metadata start time (UTC) formatted locally, falling back
+    to the folder-name stamp (``YYYY-MM-DD``) when the start time
+    is missing or unparsable.
+    """
+    date_text = format_local_time(summary.start_time)
+    if date_text:
+        return date_text
+    stamp = summary.session_id[:10]
+    try:
+        day = datetime.strptime(stamp, "%Y-%m-%d")
+    except ValueError:
+        return stamp
+    return day.strftime("%b %d, %Y")
+
+
+def library_row_lines(summary: SessionSummary) -> tuple[str, str]:
+    """The Library row's two lines: title, then muted meta.
+
+    Line 1 is the display name plus the date (a star prefix marks
+    pinned rows). Line 2 is duration, speakers and source, with a
+    status note only when it matters ("Recording…" for a live
+    session, "No transcript yet" for an untranscribed one) — the
+    full status line lives in the Session view. Pure function, no
+    Qt needed; the Library delegate draws the two lines.
+    """
+    title = summary.display_name or summary.session_id
+    if summary.pinned:
+        title = "★ " + title
+    title = f"{title} — {row_date_text(summary)}"
+    bits: list[str] = []
+    if summary.duration_seconds is not None:
+        total = int(summary.duration_seconds)
+        minutes, secs = divmod(total, 60)
+        bits.append(f"{minutes}m {secs:02d}s" if minutes else f"{secs}s")
+    if summary.speakers:
+        bits.append(", ".join(summary.speakers))
+    bits.append(summary.source_label)
+    if summary.status == "recording":
+        bits.append("Recording…")
+    elif not summary.has_transcript:
+        bits.append("No transcript yet")
+    return title, " • ".join(bits)
 
 
 def format_local_time(iso_text: str | None) -> str:
@@ -315,7 +378,7 @@ def search_sessions(output_root: str | Path,
     meaning matches — exact matches boosted first, semantic matches
     after. ``mode="text"`` is the Phase 5 behaviour, unchanged:
     case-insensitive substring over transcript text, speaker
-    names, session id and app name. ``mode="semantic"`` ranks
+    names, session id, display name and app name. ``mode="semantic"`` ranks
     sessions by their best chunk's cosine similarity to the
     query (see :mod:`app.storage.semantic_search`).
     Hybrid is best-effort: when the MiniLM model cannot be fetched
@@ -462,6 +525,7 @@ def _search_sessions_text(output_root: str | Path,
     for summary in summaries:
         haystacks = [
             summary.session_id,
+            summary.display_name,
             summary.app_name or "",
             " ".join(summary.speakers),
             session_transcript_text(summary.path),
@@ -480,9 +544,11 @@ __all__ = [
     "SEARCH_MODES",
     "SessionSummary",
     "hybrid_search",
+    "library_row_lines",
     "list_session_summaries",
     "list_sources",
     "load_session_transcript",
+    "row_date_text",
     "search_sessions",
     "session_transcript_text",
     "summarize_session",

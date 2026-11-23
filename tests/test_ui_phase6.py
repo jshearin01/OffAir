@@ -600,7 +600,7 @@ def test_library_search_filters_and_open_loads_session_view(
         win.library_search_edit.setText("Budget")
         qapp.processEvents()
         assert win.library_list.count() == 1
-        assert "2026-11-07" in win.library_list.item(0).text()
+        assert "Nov 07, 2026" in win.library_list.item(0).text()
         win.library_search_edit.setText("nothing matches this")
         qapp.processEvents()
         assert win.library_list.count() == 0
@@ -616,7 +616,8 @@ def test_library_search_filters_and_open_loads_session_view(
         qapp.processEvents()
         assert win.session_dir == first
         assert win.tabs.tabText(win.tabs.currentIndex()) == "Session"
-        assert first.name in win.loaded_session_label.text()
+        assert "Teams recording" in win.loaded_session_label.text()
+        assert win.loaded_session_label.toolTip() == str(first)
     finally:
         win.close()
 

@@ -128,9 +128,18 @@ that moment and highlight the segment being played.
   unless a recording starts.
 - The Library lists pinned sessions first (star a row with the
   **☆ Star** button), grouped under week headers — "This week"
-  for the current week, "Week of …" for earlier ones. Search
-  results stay in relevance order, without headers. The speaker
-  filter in the Library search narrows by who spoke.
+  for the current week, "Week of …" for earlier ones. Each row
+  shows the session's name and date, then its duration, speakers
+  and source. A session tied to an Outlook item is named by the
+  calendar event's subject and cannot be renamed; any other
+  session can be renamed with the **Rename** button (the custom
+  name is stored in `metadata.json` and shows in the Library,
+  the Session view and search). **Delete** (button, Delete key,
+  or right-click) removes a session permanently — audio,
+  transcript, search entries and session record — after a
+  confirmation; a session being recorded cannot be deleted.
+  Search results stay in relevance order, without headers. The
+  speaker filter in the Library search narrows by who spoke.
 - Live transcript items are grey and italic, marked
   "provisional", until the finalize pass confirms them, and the
   live status line names the Whisper model and the diarization

@@ -51,9 +51,12 @@ account. Audio, transcripts and voice profiles never leave the machine.
 - **Waveform.** The Session view shows the session's loudness,
   coloured by speaker, with bookmark markers; click it to hear
   that moment.
-- **Library pins and week groups.** Star a session to pin it first;
+- **Library pins, names and week groups.** Star a session to pin it first;
   the unfiltered list groups under "This week" / "Week of …"
-  headers. A speaker filter narrows the Library by who spoke, and
+  headers. Each row shows the session's name and date, then its
+  duration, speakers and source. Rename a session that is not tied
+  to an Outlook calendar event; Delete removes a session permanently,
+  after a confirmation. A speaker filter narrows the Library by who spoke, and
   the footer shows free disk space and what retention would delete.
 - **Keyboard shortcuts, theme toggle, tray.** Ctrl+B bookmark,
   Ctrl+P pause/resume, Ctrl+K jump to search (in-app only); one
@@ -365,12 +368,12 @@ splits.
 
 Click **Recordings** (the header button — it opens the standalone
 Recording Browser window; the Library view in the left nav is the
-same list in the main window) for a list of all sessions (newest first) with
-duration, speakers and flags (transcript / diarized / LLM export).
-Each row also carries a human status line — "Recorded · Transcribed
-· Diarized · Speakers identified", or "Recorded — not transcribed
-yet" — and the session's recording source ("Teams", "Browser",
-"Claude Code"…). Click a session to read its transcript or export it.
+same list in the main window) for a list of all sessions (newest first).
+Each row shows the session's name and date, then its duration,
+speakers and recording source ("Teams", "Browser",
+"Claude Code"…). The Session view's "Loaded session" line carries the
+full status — "Recorded · Transcribed · Diarized · Speakers identified",
+or "Recorded — not transcribed yet". Click a session to read its transcript or export it.
 
 The **Source** dropdown next to the search box filters the list to
 one recording source (only sources actually present in the library

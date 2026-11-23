@@ -358,7 +358,8 @@ def test_library_pin_sort_star_prefix_and_toggle(qapp, tmp_path):
         qapp.processEvents()
         # Pinned session first (row 1, after the week header).
         assert "★" in win.library_list.item(1).text()
-        assert "2026-11-08" in win.library_list.item(1).text()
+        assert win._library_summaries[1].session_id == (
+            "2026-11-08_10-00-00_teams")
         win.library_list.setCurrentRow(1)
         win._on_library_clicked(None)
         qapp.processEvents()

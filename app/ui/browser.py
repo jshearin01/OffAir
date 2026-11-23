@@ -38,11 +38,15 @@ logger = logging.getLogger("offair.ui.browser")
 def format_session_line(summary: SessionSummary) -> str:
     """Browser entry (pure function, no Qt needed).
 
-    Two lines: the one-line summary, then the human status line
-    ("Recorded · Transcribed · Diarized" or "Recorded — not
-    transcribed yet"). The list widget wraps, so both lines show.
+    Two lines from :func:`app.storage.browser.library_row_lines`:
+    the display name plus date, then duration / speakers / source
+    with a status note only when it matters. The list widget shows
+    both lines; the Library delegate draws the first bold and the
+    second muted.
     """
-    return f"{summary.display}\n{summary.status_text}"
+    from app.storage.browser import library_row_lines
+    title, meta = library_row_lines(summary)
+    return f"{title}\n{meta}"
 
 
 def format_search_hit_line(hit: SemanticHit) -> str:

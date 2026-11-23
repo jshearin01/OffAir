@@ -111,9 +111,10 @@ def test_format_session_line_is_pure_text(tmp_path):
     session = _make_session(tmp_path, transcript_text="Hello.",
                             speakers={"You": "John"})
     line = format_session_line(summarize_session(session))
-    assert session.name in line
-    assert "John" in line
-    assert "transcript" in line
+    title, meta = line.split("\n")
+    assert title.startswith("Teams recording — ")
+    assert "John" in meta
+    assert "1m 01s" in meta
 
 
 def test_status_text_human_status_per_state(tmp_path):
@@ -134,9 +135,12 @@ def test_status_text_human_status_per_state(tmp_path):
     assert summarize_session(full).status_text == (
         "Recorded · Transcribed · Diarized · Speakers identified · "
         "LLM export ready")
-    # The browser row carries the status line as its second line.
+    # The browser row carries the display name + date on its first
+    # line and the duration / speakers / source on its second.
     line = format_session_line(summarize_session(full))
-    assert line.split("\n")[1].startswith("Recorded · Transcribed")
+    title, meta = line.split("\n")
+    assert title.startswith("Teams recording — ")
+    assert "1m 01s" in meta and "Recording…" in meta
 
 
 def test_hybrid_default_falls_back_to_text_when_model_unavailable(

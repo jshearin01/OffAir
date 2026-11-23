@@ -14,17 +14,103 @@ from __future__ import annotations
 from app.ui.level_meter import QT_AVAILABLE
 
 if QT_AVAILABLE:
-    from PyQt6.QtCore import Qt
+    from PyQt6.QtCore import QSize, Qt
+    from PyQt6.QtGui import (
+        QFont,
+        QFontMetrics,
+        QKeySequence,
+        QShortcut,
+    )
     from PyQt6.QtWidgets import (
+        QApplication,
         QComboBox,
         QHBoxLayout,
         QLabel,
         QLineEdit,
         QListWidget,
         QPushButton,
+        QStyledItemDelegate,
+        QStyle,
+        QStyleOptionViewItem,
         QVBoxLayout,
         QWidget,
     )
+
+    class LibraryRowDelegate(QStyledItemDelegate):
+        """Two-line Library rows: bold title, muted meta line.
+
+        Session rows carry ``"title\\nmeta"`` text; the delegate
+        draws line 1 bold in the theme text colour and line 2 in
+        the muted placeholder colour, both elided at the row edge
+        (the full text stays in the item tooltip). Single-line
+        rows (week headers) fall through to the default paint.
+        Colours come from the widget palette, so the stylesheet's
+        light/dark themes and the accent selection colour apply
+        without the delegate knowing the theme.
+        """
+
+        def paint(self, painter, option, index) -> None:
+            text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+            lines = str(text).split("\n")
+            if len(lines) < 2:
+                super().paint(painter, option, index)
+                return
+            opt = QStyleOptionViewItem(option)
+            self.initStyleOption(opt, index)
+            widget = opt.widget
+            style = (widget.style() if widget is not None
+                     else QApplication.style())
+            style.drawPrimitive(
+                QStyle.PrimitiveElement.PE_PanelItemViewItem,
+                opt, painter, widget)
+            selected = bool(
+                opt.state & QStyle.StateFlag.State_Selected)
+            if selected:
+                title_color = opt.palette.highlightedText().color()
+                meta_color = title_color
+            else:
+                title_color = opt.palette.text().color()
+                meta_color = opt.palette.placeholderText().color()
+            rect = opt.rect.adjusted(12, 7, -12, -7)
+            title_font = QFont(opt.font)
+            title_font.setBold(True)
+            title_fm = QFontMetrics(title_font)
+            meta_fm = QFontMetrics(opt.font)
+            title = title_fm.elidedText(
+                lines[0], Qt.TextElideMode.ElideRight, rect.width())
+            meta = meta_fm.elidedText(
+                lines[1], Qt.TextElideMode.ElideRight, rect.width())
+            painter.save()
+            painter.setFont(title_font)
+            painter.setPen(title_color)
+            painter.drawText(
+                rect.x(), rect.y(), rect.width(),
+                title_fm.lineSpacing(),
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignVCenter, title)
+            painter.setFont(opt.font)
+            painter.setPen(meta_color)
+            painter.drawText(
+                rect.x(), rect.y() + title_fm.lineSpacing() + 2,
+                rect.width(), meta_fm.lineSpacing(),
+                Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignVCenter, meta)
+            painter.restore()
+            if opt.state & QStyle.StateFlag.State_HasFocus:
+                focus_opt = QStyleOptionViewItem(opt)
+                style.drawPrimitive(
+                    QStyle.PrimitiveElement.PE_FrameFocusRect,
+                    focus_opt, painter, widget)
+
+        def sizeHint(self, option, index) -> QSize:
+            text = index.data(Qt.ItemDataRole.DisplayRole) or ""
+            if "\n" not in str(text):
+                return super().sizeHint(option, index)
+            title_font = QFont(option.font)
+            title_font.setBold(True)
+            height = (QFontMetrics(title_font).lineSpacing()
+                      + QFontMetrics(option.font).lineSpacing() + 16)
+            return QSize(200, height)
 
 from app.config import DEFAULT_SEARCH_MODE, SEARCH_MODES
 
@@ -106,6 +192,16 @@ def build_library_view(win) -> QWidget:
     win.library_list.setHorizontalScrollBarPolicy(
         Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
     win.library_list.setMinimumHeight(160)
+    win.library_list.setItemDelegate(LibraryRowDelegate(win.library_list))
+    win.library_list.setContextMenuPolicy(
+        Qt.ContextMenuPolicy.CustomContextMenu)
+    win.library_list.customContextMenuRequested.connect(
+        win._on_library_context_menu)
+    win.library_delete_shortcut = QShortcut(
+        QKeySequence(Qt.Key.Key_Delete), win.library_list)
+    win.library_delete_shortcut.setContext(
+        Qt.ShortcutContext.WidgetWithChildrenShortcut)
+    win.library_delete_shortcut.activated.connect(win._on_library_delete)
     win.library_list.itemClicked.connect(win._on_library_clicked)
     win.library_list.itemDoubleClicked.connect(win._on_library_open)
     layout.addWidget(win.library_list, 1)
@@ -123,6 +219,24 @@ def build_library_view(win) -> QWidget:
     win.library_star_btn.setEnabled(False)
     win.library_star_btn.clicked.connect(win._on_library_star_toggle)
     open_row.addWidget(win.library_star_btn)
+    win.library_rename_btn = QPushButton("Rename")
+    win.library_rename_btn.setMinimumHeight(40)
+    win.library_rename_btn.setToolTip(
+        "Rename the selected session — a custom name for sessions "
+        "not tied to an Outlook calendar event.")
+    win.library_rename_btn.setEnabled(False)
+    win.library_rename_btn.clicked.connect(win._on_library_rename)
+    open_row.addWidget(win.library_rename_btn)
+    win.library_delete_btn = QPushButton("Delete")
+    win.library_delete_btn.setObjectName("dangerButton")
+    win.library_delete_btn.setMinimumHeight(40)
+    win.library_delete_btn.setToolTip(
+        "Delete the selected session permanently — its audio, "
+        "transcript, search entries and session record are "
+        "removed. A confirmation is asked first.")
+    win.library_delete_btn.setEnabled(False)
+    win.library_delete_btn.clicked.connect(win._on_library_delete)
+    open_row.addWidget(win.library_delete_btn)
     win.library_open_btn = QPushButton("Open in Session view")
     win.library_open_btn.setObjectName("primaryButton")
     win.library_open_btn.setMinimumHeight(40)

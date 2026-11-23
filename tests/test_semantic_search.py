@@ -268,6 +268,26 @@ def test_hybrid_boosts_exact_matches_and_dedups(tmp_path):
 
 
 # --- index persistence / incremental ----------------------------------------
+def test_remove_session_drops_only_its_rows(tmp_path):
+    budget, timeline, index = _index_with_fixture(tmp_path)
+    assert index.index_session(budget) > 0
+    assert index.index_session(timeline) > 0
+    total = index.chunk_count()
+    removed = index.remove_session(budget.name)
+    assert removed > 0
+    assert index.chunk_count() == total - removed + 1  # +1: index_state row
+    assert budget.name not in index.indexed_sessions()
+    assert timeline.name in index.indexed_sessions()
+    assert index.remove_session(budget.name) == 0
+    index.close()
+
+
+def test_remove_session_without_index_file_is_a_no_op(tmp_path):
+    index = SemanticSearchIndex(tmp_path, embedder=FakeEmbedder())
+    assert index.remove_session("no-such-session") == 0
+    assert not (tmp_path / "search_index.db").exists()
+
+
 def test_index_is_incremental_and_persists_across_instances(tmp_path):
     session, _timeline, index = _index_with_fixture(tmp_path)
     first = index.index_session(session)

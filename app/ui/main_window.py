@@ -90,8 +90,10 @@ from app.storage.bookmarks import add_bookmark, list_bookmarks
 from app.storage.browser import (
     format_local_time,
     hybrid_search,
+    library_row_lines,
     list_session_summaries,
     list_sources,
+    row_date_text,
     search_sessions,
     summarize_session,
 )
@@ -150,9 +152,11 @@ from app.storage.sessions import (
     TRANSCRIPT_LIVE_FILE,
     create_dictation_session,
     create_session,
+    delete_session,
     finalize_session,
     is_dictation_session,
     load_metadata,
+    rename_session,
     set_session_source,
     update_metadata,
 )
@@ -168,7 +172,6 @@ from app.storage.source import (
     resolve_recording_source,
 )
 from app.resources import set_app_icon
-from app.ui.browser import format_session_line
 from app.ui.calendar_view import CalendarWidget, session_day
 from app.ui.help_view import create_help_tab
 from app.ui.level_meter import QT_AVAILABLE, LevelMeter
@@ -4517,38 +4520,6 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
         self._on_view_changed(index)
 
     # ------------------------------------------------------------- Library ---
-    def _library_row_height_for(self, text: str) -> int:
-        """Row height that fits ``text`` wrapped at the list width.
-
-        Same problem as the Recording Browser (see
-        ``browser._row_height_for``): Qt's item delegate
-        under-measures wrapped rows, so rows get an explicit height
-        from a greedy word-wrap count, plus two spare lines.
-        """
-        fm = self.library_list.fontMetrics()
-        width = max(120, self.library_list.viewport().width() - 100)
-        lines = 0
-        for paragraph in text.split("\n"):
-            lines += 1
-            line_width = 0
-            for word in paragraph.split(" "):
-                word_width = fm.horizontalAdvance(word + " ")
-                if line_width + word_width > width and line_width > 0:
-                    lines += 1
-                    line_width = word_width
-                else:
-                    line_width += word_width
-        return 16 + (lines + 2) * fm.lineSpacing()
-
-    def _relayout_library_rows(self) -> None:
-        """Apply :meth:`_library_row_height_for` to every list row."""
-        from PyQt6.QtCore import QSize
-        for row in range(self.library_list.count()):
-            item = self.library_list.item(row)
-            item.setSizeHint(QSize(
-                self.library_list.viewport().width(),
-                self._library_row_height_for(item.text())))
-
     def _refresh_library_source_options(self) -> None:
         """Rebuild the Library source filter from the library's sources."""
         previous = self.library_source_combo.currentData()
@@ -4615,10 +4586,11 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
                     self.library_list.addItem(header_item)
                     self._library_summaries.append(None)
                 self._library_summaries.append(summary)
-                line = format_session_line(summary)
-                if summary.pinned:
-                    line = "★ " + line
-                self.library_list.addItem(line)
+                title, meta = library_row_lines(summary)
+                line = f"{title}\n{meta}"
+                item = QListWidgetItem(line)
+                item.setToolTip(line)
+                self.library_list.addItem(item)
             if summaries:
                 self.library_status_label.setText(
                     f"{len(summaries)} session(s) in {root}")
@@ -4626,9 +4598,7 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
                 self.library_status_label.setText(
                     "No sessions yet — record your first meeting "
                     "and it will appear here.")
-            self._relayout_library_rows()
-            self._update_library_open_button()
-            self._update_library_star_button()
+            self._update_library_action_buttons()
             return
         if mode == "text":
             summaries = search_sessions(
@@ -4636,18 +4606,17 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
                 speaker=selected_speaker)
             self._library_summaries = list(summaries)
             for summary in summaries:
-                line = format_session_line(summary)
-                if summary.pinned:
-                    line = "★ " + line
-                self.library_list.addItem(line)
+                title, meta = library_row_lines(summary)
+                line = f"{title}\n{meta}"
+                item = QListWidgetItem(line)
+                item.setToolTip(line)
+                self.library_list.addItem(item)
             self.library_status_label.setText(
                 f"{len(summaries)} session(s) match “{query}”"
                 if summaries else
                 f"No sessions match “{query}” — try different words, "
                 "or switch to Semantic search.")
-            self._relayout_library_rows()
-            self._update_library_open_button()
-            self._update_library_star_button()
+            self._update_library_action_buttons()
             return
         # Semantic / hybrid: first use downloads the MiniLM model
         # (~22 MB) and builds the index — say so first.
@@ -4667,19 +4636,18 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
                 speaker=selected_speaker)
             self._library_summaries = list(summaries)
             for summary in summaries:
-                line = format_session_line(summary)
-                if summary.pinned:
-                    line = "★ " + line
-                self.library_list.addItem(line)
+                title, meta = library_row_lines(summary)
+                line = f"{title}\n{meta}"
+                item = QListWidgetItem(line)
+                item.setToolTip(line)
+                self.library_list.addItem(item)
             self.library_status_label.setText(
                 f"Semantic search unavailable: {exc} Showing "
                 f"{len(summaries)} text match(es) instead."
                 if summaries else
                 f"No sessions match “{query}” — Semantic search "
                 f"unavailable: {exc}")
-            self._relayout_library_rows()
-            self._update_library_open_button()
-            self._update_library_star_button()
+            self._update_library_action_buttons()
             return
         if selected_source is not None or selected_speaker is not None:
             by_id = {s.session_id: s
@@ -4696,26 +4664,26 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
         summaries = {s.session_id: s
                      for s in list_session_summaries(root)}
         from app.storage.browser import SessionSummary
+        from app.transcription.exports import format_txt_timestamp
         for hit in hits:
-            display = hit.display()
-            pinned = (summaries.get(hit.session_id) is not None
-                      and summaries[hit.session_id].pinned)
-            if pinned:
-                display = "★ " + display
-            self.library_list.addItem(display)
-            self._library_summaries.append(
-                summaries.get(hit.session_id) or SessionSummary(
-                    session_id=hit.session_id,
-                    path=root / hit.session_id))
+            hit_summary = summaries.get(hit.session_id) or SessionSummary(
+                session_id=hit.session_id,
+                path=root / hit.session_id)
+            title, _meta = library_row_lines(hit_summary)
+            span = (f"{format_txt_timestamp(hit.start_s)}–"
+                    f"{format_txt_timestamp(hit.end_s)}")
+            line = f"{title}\n{span} {hit.snippet}"
+            item = QListWidgetItem(line)
+            item.setToolTip(line)
+            self.library_list.addItem(item)
+            self._library_summaries.append(hit_summary)
         sessions = {h.session_id for h in hits}
         self.library_status_label.setText(
             f"{len(hits)} chunk(s) in {len(sessions)} session(s) "
             f"— {mode} search" if hits else
             f"No matches for “{query}” in {mode.capitalize()} "
             "search — try different words, or switch to Text search.")
-        self._relayout_library_rows()
-        self._update_library_open_button()
-        self._update_library_star_button()
+        self._update_library_action_buttons()
 
     def _selected_library_summary(self):
         """The session the selected Library row belongs to, or None."""
@@ -4733,6 +4701,189 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
             "Load the selected session into the Session view."
             if enabled else "Select a session first.")
 
+    def _update_library_action_buttons(self) -> None:
+        """Enable/disable the Library row buttons for the selection.
+
+        Rename stays disabled for Outlook-linked sessions (their
+        name is the calendar event's subject); Delete needs only a
+        selected session row.
+        """
+        self._update_library_open_button()
+        self._update_library_star_button()
+        summary = self._selected_library_summary()
+        rename_btn = getattr(self, "library_rename_btn", None)
+        if rename_btn is not None:
+            if summary is None:
+                rename_btn.setEnabled(False)
+                rename_btn.setToolTip("Select a session first.")
+            elif summary.calendar_linked:
+                rename_btn.setEnabled(False)
+                rename_btn.setToolTip(
+                    "Named by its Outlook calendar event")
+            else:
+                rename_btn.setEnabled(True)
+                rename_btn.setToolTip("Rename the selected session.")
+        delete_btn = getattr(self, "library_delete_btn", None)
+        if delete_btn is not None:
+            delete_btn.setEnabled(summary is not None)
+            delete_btn.setToolTip(
+                "Delete the selected session permanently."
+                if summary is not None else "Select a session first.")
+
+    def _live_session_dir(self) -> Path | None:
+        """The directory being recorded right now, or None."""
+        state = self.capture.state if self.capture else CaptureState.IDLE
+        if state in (CaptureState.RECORDING, CaptureState.PAUSED):
+            return self.session_dir
+        return None
+
+    def _session_has_active_work(self) -> bool:
+        """Whether a processing worker thread is still running."""
+        names = ("_transcribe_thread", "_diarize_thread",
+                 "_suggest_thread", "_nearlive_thread",
+                 "_summarize_thread", "_enterprise_thread",
+                 "_polish_thread", "_finalize_thread",
+                 "_stop_thread", "_waveform_thread", "_live_thread")
+        for name in names:
+            thread = getattr(self, name, None)
+            if thread is not None and thread.isRunning():
+                return True
+        return False
+
+    def _on_library_context_menu(self, pos) -> None:
+        """Right-click menu on a Library row: Delete the session."""
+        item = self.library_list.itemAt(pos)
+        if item is None:
+            return
+        row = self.library_list.row(item)
+        if row < 0 or row >= len(getattr(self, "_library_summaries", [])):
+            return
+        if self._library_summaries[row] is None:
+            return  # week header, not a session
+        self.library_list.setCurrentRow(row)
+        self._update_library_action_buttons()
+        menu = QMenu(self)
+        delete_action = menu.addAction("Delete session…")
+        if menu.exec(self.library_list.mapToGlobal(pos)) == delete_action:
+            self._on_library_delete()
+
+    def _on_library_delete(self) -> None:
+        """Delete the selected Library session, after confirmation."""
+        summary = self._selected_library_summary()
+        if summary is None:
+            return
+        session_dir = Path(summary.path)
+        live_dir = self._live_session_dir()
+        if live_dir is not None and Path(live_dir) == session_dir:
+            QMessageBox.warning(
+                self, "Cannot delete this session",
+                "This session is being recorded — stop the recording "
+                "first.")
+            return
+        if (self.session_dir is not None
+                and Path(self.session_dir) == session_dir
+                and self._session_has_active_work()):
+            QMessageBox.warning(
+                self, "Cannot delete this session",
+                "This session is still being processed — wait for "
+                "the processing to finish, then delete it.")
+            return
+        answer = QMessageBox.question(
+            self, "Delete session?",
+            f"Delete “{summary.display_name}” "
+            f"({row_date_text(summary)}) permanently?\n\n"
+            "Its audio, transcript, search entries and session "
+            "record will be permanently removed. This cannot be "
+            "undone.",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            delete_session(session_dir, live_dir=live_dir)
+        except (RuntimeError, FileNotFoundError, OSError) as exc:
+            QMessageBox.warning(
+                self, "Could not delete session", str(exc))
+            return
+        was_loaded = (self.session_dir is not None
+                      and Path(self.session_dir) == session_dir)
+        if was_loaded:
+            self._unload_session()
+        self._refresh_library()
+        self._refresh_disk_line()
+        self.statusBar().showMessage(
+            f"Deleted session {session_dir.name}")
+
+    def _unload_session(self) -> None:
+        """Clear the loaded session (its folder was deleted).
+
+        Mirrors the reset half of :meth:`load_session`: every view
+        returns to the no-session empty state, and the Session
+        chooser falls back to the newest remaining session.
+        """
+        self.session_dir = None
+        self._live_chunker = None
+        self._live_busy = False
+        self._live_failed = False
+        self._live_list_started = False
+        self._suggestion_objects = []
+        self._suggestion_dicts = []
+        self.transcribe_label.setText("")
+        self.diarize_label.setText("")
+        self.export_label.setText("")
+        self.summarize_label.setText("")
+        self.cleanup_label.setText("")
+        self.nearlive_label.setText(self._nearlive_hint_text())
+        self._refresh_live_model_label()
+        for bar in (self.transcribe_progress, self.diarize_progress,
+                    self.nearlive_progress):
+            bar.setVisible(False)
+            bar.setValue(0)
+        self._follow_segment_index = None
+        self._refresh_segments_list()
+        self._refresh_rename_labels([])
+        self._refresh_known_speakers()
+        self._refresh_suggestions_from_disk()
+        self._refresh_bookmarks_list()
+        self._refresh_waveform()
+        self._refresh_dictation_note()
+        self.nearlive_list.clear()
+        self.nearlive_list.addItem(self._placeholder_item(
+            "Nothing here yet — run near-live on a recorded "
+            "session."))
+        self._refresh_session_chooser()
+        self._refresh_session_source_editor()
+        self._update_loaded_session_label()
+        self._update_buttons()
+        calendar = getattr(self, "calendar_widget", None)
+        if calendar is not None:
+            calendar.refresh()
+
+    def _on_library_rename(self) -> None:
+        """Rename the selected Library session (custom name)."""
+        summary = self._selected_library_summary()
+        if summary is None or summary.calendar_linked:
+            return
+        text, ok = QInputDialog.getText(
+            self, "Rename session", "Session name:",
+            text=summary.display_name)
+        if not ok:
+            return
+        try:
+            rename_session(summary.path, text)
+        except ValueError as exc:
+            QMessageBox.warning(
+                self, "Cannot rename session", str(exc))
+            return
+        self._refresh_library()
+        if (self.session_dir is not None
+                and Path(self.session_dir) == Path(summary.path)):
+            self._update_loaded_session_label()
+            self._refresh_session_chooser(select=self.session_dir)
+        self.statusBar().showMessage(
+            f"Renamed session to “{text.strip()}”")
+
     def _on_library_search_changed(self, text: str) -> None:
         self._refresh_library(query=text)
 
@@ -4743,8 +4894,7 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
         self._refresh_library()
 
     def _on_library_clicked(self, _item) -> None:
-        self._update_library_open_button()
-        self._update_library_star_button()
+        self._update_library_action_buttons()
 
     def _on_library_open(self, _item=None) -> None:
         """Load the selected Library session in the Session view."""
@@ -5118,7 +5268,7 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
     def _refresh_session_chooser(self, select: Path | None = None) -> None:
         """Rebuild the Session-view session chooser, newest first.
 
-        Rows are ``"<session id> — <status>"`` from
+        Rows are ``"<display name> — <status>"`` from
         :func:`list_session_summaries`. ``select`` (a session path)
         is picked when present; otherwise the previous selection is
         kept, else the newest session. Called at startup, after a
@@ -5144,7 +5294,7 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
             self.session_combo.clear()
             for summary in summaries:
                 self.session_combo.addItem(
-                    f"{summary.session_id} — {summary.status_text}",
+                    f"{summary.display_name} — {summary.status_text}",
                     str(summary.path))
             if not summaries:
                 self.session_combo.addItem("(no sessions yet)", None)
@@ -5197,7 +5347,8 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
             summary = summarize_session(self.session_dir)
         except Exception:  # noqa: BLE001 — label must not crash the UI
             summary = None
-        name = self.session_dir.name
+        name = (summary.display_name if summary is not None
+                else self.session_dir.name)
         # start_time is stored as UTC in metadata.json; the folder
         # name is local time — format_local_time converts so the two
         # agree (Nov 10 2026: the raw UTC value showed here before).

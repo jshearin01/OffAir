@@ -211,6 +211,30 @@ class SpeakerDatabase:
         self._conn.commit()
         return speaker_id
 
+    def delete_embeddings_for_session(self, source_session: str) -> int:
+        """Delete embedding samples contributed by one session.
+
+        Removes every ``embeddings`` row whose ``source_session``
+        matches, then recomputes ``sample_count`` for the affected
+        speakers. Speaker rows themselves are never deleted — a
+        speaker identity is cross-session, and a session delete
+        must not erase a person. Returns the samples removed.
+        """
+        affected = [row[0] for row in self._conn.execute(
+            "SELECT DISTINCT speaker_id FROM embeddings "
+            "WHERE source_session = ?", (source_session,))]
+        removed = self._conn.execute(
+            "DELETE FROM embeddings WHERE source_session = ?",
+            (source_session,)).rowcount
+        for speaker_id in affected:
+            self._conn.execute(
+                "UPDATE speakers SET sample_count = "
+                "(SELECT COUNT(*) FROM embeddings "
+                "WHERE speaker_id = ?) WHERE id = ?",
+                (speaker_id, speaker_id))
+        self._conn.commit()
+        return removed
+
     def speaker_embedding(self, name: str) -> np.ndarray | None:
         """Mean embedding for ``name`` (unit length), or None if unknown."""
         speaker = self.get_speaker(name)

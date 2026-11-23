@@ -26,7 +26,9 @@ mode selected, with the install note shown when sherpa-onnx is absent.*
 *Library — session list, pinned sessions first, grouped under week
 headers ("This week", "Week of …"), search with the Hybrid /
 Text / Semantic mode picker, the source filter and the speaker
-filter, a star button per row, and the disk line in the footer.
+filter. Each row shows the session name and date, then duration,
+speakers and source. Star, Rename, Delete and Open act on the
+selected row; the disk line is in the footer.
 (The calendar has its own Calendar page now.)*
 
 ![Calendar view](../screenshots/calendar-view.png)

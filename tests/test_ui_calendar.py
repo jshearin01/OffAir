@@ -360,7 +360,8 @@ def test_clicking_a_badge_loads_that_session(qapp, tmp_path):
         badge.click()
         qapp.processEvents()
         assert win.session_dir == target
-        assert target.name in win.loaded_session_label.text()
+        assert "Teams recording" in win.loaded_session_label.text()
+        assert win.loaded_session_label.toolTip() == str(target)
     finally:
         win.close()
 
