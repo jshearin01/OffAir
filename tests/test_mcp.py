@@ -145,14 +145,20 @@ def _timeline_segments():
     ]
 
 
+_NO_CALENDAR_EVENT = object()
+
+
 def _make_session(root, segments, app_name="Teams", source=None,
-                  source_detail=None, names=None, duration=61.3):
+                  source_detail=None, names=None, duration=61.3,
+                  calendar_event=_NO_CALENDAR_EVENT):
     session = create_session(root, app_name=app_name)
     fields = {"duration_seconds": duration, "status": "completed"}
     if source is not None:
         fields["source"] = source
     if source_detail is not None:
         fields["source_detail"] = source_detail
+    if calendar_event is not _NO_CALENDAR_EVENT:
+        fields["calendar_event"] = calendar_event
     update_metadata(session, **fields)
     _write_transcript(session, segments)
     if names:
@@ -290,6 +296,33 @@ def test_get_session_legacy_session_without_source_is_other(tmp_path):
     out = tools.get_session(legacy.name)
     assert out["source"] == "other"
     assert out["source_detail"] is None
+
+
+def test_get_session_returns_linked_calendar_event(tmp_path):
+    # The stored shape is Outlook linking's verbatim dict
+    # (app/calendar/outlook.py) — the tool must surface it whole.
+    event = {
+        "subject": "Standup",
+        "start": "2026-11-10T10:05:00+00:00",
+        "end": "2026-11-10T10:35:00+00:00",
+        "attendees": ["John", "Priya"],
+        "organiser": "Priya",
+        "entry_id": "ID-1",
+    }
+    session = _make_session(tmp_path, _budget_segments(),
+                            calendar_event=event)
+    tools = OffAirMCPTools(tmp_path)
+    out = tools.get_session(session.name)
+    assert out["calendar_event"] == event
+
+
+def test_get_session_explicit_null_calendar_event_is_null(tmp_path):
+    # Linking ran and no event matched: the stored null stays null.
+    session = _make_session(tmp_path, _budget_segments(),
+                            calendar_event=None)
+    tools = OffAirMCPTools(tmp_path)
+    out = tools.get_session(session.name)
+    assert out["calendar_event"] is None
 
 
 def test_get_session_unknown_session_raises(tools):

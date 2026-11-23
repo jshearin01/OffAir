@@ -150,8 +150,8 @@ def build_server(output_root: str | Path,
         ("other" / null when the session predates the source field).
         dictation is true only for dictation sessions. bookmarks
         lists the session's bookmarks, earliest first.
-        calendar_event is always null in v1 — the Outlook linking
-        feature will fill it later.
+        calendar_event is the linked Outlook event stored in the
+        session's metadata, or null when no event matched.
         """
         return json.dumps(tools.get_session(session_id))
 

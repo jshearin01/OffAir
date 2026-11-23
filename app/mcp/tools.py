@@ -85,6 +85,27 @@ SOURCE_VALUES = SOURCES
 SOURCE_DEFAULT = SOURCE_OTHER
 
 
+def _calendar_event(session_dir: str | Path) -> dict | None:
+    """The session's linked Outlook event, or None.
+
+    A pure read of the ``calendar_event`` key Outlook linking
+    stored in ``metadata.json`` (see :mod:`app.calendar.outlook`),
+    returned verbatim: ``{subject, start, end, attendees,
+    organiser, entry_id}``. None when the key is absent, null
+    (no event matched), or not a dict — a corrupt value reads as
+    no link, never as a crash.
+    """
+    try:
+        # backfill=False: a pure read, matching _source_fields —
+        # the MCP server is read-only and must never trigger the
+        # backfill write load_metadata() performs by default.
+        metadata = load_metadata(session_dir, backfill=False)
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+    event = metadata.get("calendar_event")
+    return event if isinstance(event, dict) else None
+
+
 def _source_fields(session_dir: str | Path) -> dict:
     """``{source, source_detail, dictation}`` for a session folder.
 
@@ -521,14 +542,14 @@ class OffAirMCPTools:
         source field); ``dictation`` is true only for dictation
         sessions. ``bookmarks`` lists the session's bookmarks,
         earliest first (see :meth:`list_bookmarks`).
-        ``calendar_event`` is always null in v1 — the
-        Outlook linking feature will fill it later. The key is
-        present now so clients can rely on the shape.
+        ``calendar_event`` is the linked Outlook event stored in
+        the session's metadata (``{subject, start, end, attendees,
+        organiser, entry_id}``), or null when no event matched.
         """
         session_dir = self._find_session_dir(session_id)
         summary = summarize_session(session_dir)
         result = _summary_to_dict(summary)
-        result["calendar_event"] = None
+        result["calendar_event"] = _calendar_event(session_dir)
         result["bookmarks"] = self.list_bookmarks(
             session_dir.name)["results"]
         return result
