@@ -19,8 +19,9 @@ so long app names and subjects fit the narrow day cells.)
 - **Day** — one column for the anchor date, its badges in time
   order, with the date as the header.
 
-Switch modes with the **Month | Work week | Day** buttons under
-the navigation row. The anchor is kept when you switch, so
+Switch modes with the **Month | Work week | Day** buttons in the
+single control row above the grid, beside the navigation
+controls and the speaker filter. The anchor is kept when you switch, so
 switching modes stays on the same week or day.
 
 ## What each badge shows

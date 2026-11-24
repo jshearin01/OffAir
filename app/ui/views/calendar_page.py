@@ -13,60 +13,36 @@ from __future__ import annotations
 from app.ui.level_meter import QT_AVAILABLE
 
 if QT_AVAILABLE:
-    from PyQt6.QtWidgets import (
-        QComboBox,
-        QHBoxLayout,
-        QLabel,
-        QVBoxLayout,
-        QWidget,
-    )
+    from PyQt6.QtWidgets import QVBoxLayout, QWidget
 
 from app.ui.calendar_view import CalendarWidget
 
 
 def build_calendar_view(win) -> QWidget:
-    """Build the Calendar page; the widget lives on ``win``."""
+    """Build the Calendar page; the widget lives on ``win``.
+
+    No page title or hint paragraph: the left nav already names
+    the page, and the widget's single control row plus the grid
+    tooltip carry the guidance, so the grid fills the page.
+    """
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(12)
-
-    title = QLabel("Calendar")
-    title.setObjectName("sectionTitle")
-    layout.addWidget(title)
-    hint = QLabel(
-        "One badge per recording, on the day it was recorded. "
-        "Switch between Month, Work week and Day below; click a "
-        "badge to load that session.")
-    hint.setObjectName("hint")
-    hint.setWordWrap(True)
-    layout.addWidget(hint)
-
-    # Speaker filter: days with no matching session are dimmed,
-    # matching badges stay full-strength and clickable (see
-    # MainWindow._apply_calendar_speaker_filter). The combo is
-    # rebuilt from the library's speakers whenever the view is
-    # shown; the filter itself is re-applied after every grid
-    # rebuild, so it survives refreshes.
-    filter_row = QHBoxLayout()
-    filter_row.setSpacing(8)
-    filter_label = QLabel("Speaker:")
-    filter_label.setObjectName("fieldLabel")
-    filter_row.addWidget(filter_label)
-    win.calendar_speaker_combo = QComboBox()
-    win.calendar_speaker_combo.setToolTip(
-        "Dim days with no session where this speaker spoke. "
-        "Matching badges stay clickable.")
-    win.calendar_speaker_combo.addItem("All speakers", None)
-    win.calendar_speaker_combo.currentIndexChanged.connect(
-        win._on_calendar_speaker_changed)
-    filter_row.addWidget(win.calendar_speaker_combo)
-    filter_row.addStretch(1)
-    layout.addLayout(filter_row)
+    layout.setSpacing(0)
 
     win.calendar_widget = CalendarWidget(win.config.output_root)
     win.calendar_widget.session_requested.connect(
         win._on_calendar_open_session)
+    # Speaker filter: the combo lives in the widget's single
+    # control row (Nov 24 2026). The main window aliases it and
+    # rebuilds its options whenever the view is shown; the
+    # filter itself is re-applied after every grid rebuild, so
+    # it survives refreshes. Days with no matching session are
+    # dimmed, matching badges stay full-strength and clickable
+    # (see MainWindow._apply_calendar_speaker_filter).
+    win.calendar_speaker_combo = win.calendar_widget.speaker_combo
+    win.calendar_speaker_combo.currentIndexChanged.connect(
+        win._on_calendar_speaker_changed)
     _original_refresh = win.calendar_widget.refresh
 
     def _refresh_with_filter() -> None:

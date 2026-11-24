@@ -186,6 +186,10 @@ QPushButton:hover {{ background-color: {surface2}; }}
 QPushButton:pressed {{ background-color: {surface2}; }}
 QPushButton:disabled {{ color: {text3}; background-color: {surface};
     border-color: {border}; }}
+/* Slim control rows (calendar): small padding so one row of
+   nav + switcher + filter stays compact. */
+QWidget#slimControls QPushButton, QWidget#slimControls QComboBox {{
+    padding: 4px 10px; }}
 QPushButton#primaryButton {{ background-color: {primary_bg};
     color: #ffffff; border: none; font-weight: 600; }}
 QPushButton#primaryButton:hover {{ background-color: {primary_hover}; }}

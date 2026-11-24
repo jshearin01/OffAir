@@ -239,6 +239,7 @@ if QT_AVAILABLE:
     from PyQt6.QtCore import QSize, Qt, pyqtSignal
     from PyQt6.QtWidgets import (
         QButtonGroup,
+        QComboBox,
         QFrame,
         QGridLayout,
         QHBoxLayout,
@@ -332,9 +333,10 @@ if QT_AVAILABLE:
     class CalendarWidget(QWidget):
         """Month / work-week / day grid of recordings.
 
-        Header: Previous / title / Next / Today, with a Month |
-        Work week | Day switcher below it. Below that a scrollable
-        grid: month mode is Monday-first with one cell per day,
+        One slim control row: Previous / title / Next / Today,
+        the Month | Work week | Day switcher, and the speaker
+        filter — then the grid takes the rest of the page.
+        Month mode is Monday-first with one cell per day,
         work-week mode is five Mon–Fri columns for the anchor
         date's week, day mode is one column for the anchor date.
         One badge per recording that day, in time order. Clicking
@@ -364,18 +366,32 @@ if QT_AVAILABLE:
             self._badges: list[_BadgeButton] = []
 
             layout = QVBoxLayout(self)
-            layout.setContentsMargins(16, 16, 16, 16)
-            layout.setSpacing(12)
+            layout.setContentsMargins(0, 4, 0, 0)
+            layout.setSpacing(6)
 
-            nav_row = QHBoxLayout()
-            nav_row.setSpacing(8)
+            def _separator() -> QFrame:
+                line = QFrame()
+                line.setFrameShape(QFrame.Shape.VLine)
+                line.setFrameShadow(QFrame.Shadow.Sunken)
+                return line
+
+            # One slim control row (Nov 24 2026): navigation, the
+            # mode switcher and the speaker filter share a single
+            # row so the grid fills the page. The speaker combo
+            # lives here; calendar_page.py aliases it onto the
+            # main window and connects its signal.
+            controls = QWidget()
+            controls.setObjectName("slimControls")
+            control_row = QHBoxLayout(controls)
+            control_row.setContentsMargins(0, 0, 0, 0)
+            control_row.setSpacing(8)
             self.prev_btn = QPushButton("‹")
             self.prev_btn.setToolTip("Previous month")
-            self.prev_btn.setMaximumWidth(44)
+            self.prev_btn.setMaximumWidth(36)
             self.prev_btn.clicked.connect(self.show_previous_month)
             self.next_btn = QPushButton("›")
             self.next_btn.setToolTip("Next month")
-            self.next_btn.setMaximumWidth(44)
+            self.next_btn.setMaximumWidth(36)
             self.next_btn.clicked.connect(self.show_next_month)
             self.today_btn = QPushButton("Today")
             self.today_btn.setToolTip("Jump back to the current month")
@@ -384,19 +400,11 @@ if QT_AVAILABLE:
             self.month_label.setObjectName("sectionTitle")
             self.month_label.setAlignment(
                 Qt.AlignmentFlag.AlignCenter)
-            nav_row.addWidget(self.prev_btn)
-            nav_row.addWidget(self.month_label, 1)
-            nav_row.addWidget(self.next_btn)
-            nav_row.addWidget(self.today_btn)
-            layout.addLayout(nav_row)
-
-            # Mode switcher (Nov 20 2026): its own row, so the
-            # prev/next/Today controls are never crowded.
-            mode_row = QHBoxLayout()
-            mode_row.setSpacing(8)
-            mode_title = QLabel("View:")
-            mode_title.setObjectName("fieldLabel")
-            mode_row.addWidget(mode_title)
+            control_row.addWidget(self.prev_btn)
+            control_row.addWidget(self.month_label, 1)
+            control_row.addWidget(self.next_btn)
+            control_row.addWidget(self.today_btn)
+            control_row.addWidget(_separator())
             self._mode_group = QButtonGroup(self)
             self._mode_buttons: list[tuple[QPushButton, str]] = []
             for mode, text, tip in (
@@ -414,9 +422,18 @@ if QT_AVAILABLE:
                     lambda _checked, _mode=mode: self.set_mode(_mode))
                 self._mode_group.addButton(button)
                 self._mode_buttons.append((button, mode))
-                mode_row.addWidget(button)
-            mode_row.addStretch(1)
-            layout.addLayout(mode_row)
+                control_row.addWidget(button)
+            control_row.addWidget(_separator())
+            speaker_title = QLabel("Speaker:")
+            speaker_title.setObjectName("fieldLabel")
+            control_row.addWidget(speaker_title)
+            self.speaker_combo = QComboBox()
+            self.speaker_combo.setToolTip(
+                "Dim days with no session where this speaker spoke. "
+                "Matching badges stay clickable.")
+            self.speaker_combo.addItem("All speakers", None)
+            control_row.addWidget(self.speaker_combo)
+            layout.addWidget(controls)
 
             self.empty_label = QLabel("")
             self.empty_label.setObjectName("hint")
@@ -424,6 +441,9 @@ if QT_AVAILABLE:
             layout.addWidget(self.empty_label)
 
             self._scroll = QScrollArea(self)
+            self._scroll.setToolTip(
+                "One badge per recording, on the day it was "
+                "recorded. Click a badge to load that session.")
             self._scroll.setWidgetResizable(True)
             self._scroll.setHorizontalScrollBarPolicy(
                 Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
