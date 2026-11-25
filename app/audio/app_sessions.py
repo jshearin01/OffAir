@@ -350,6 +350,87 @@ def find_session(sessions: list[AudioSessionInfo],
     return None
 
 
+def _process_rows(process_iter=None) -> list[tuple[int, str, int | None]]:
+    """``[(pid, name, ppid)]`` for the process table, ``[]`` on failure.
+
+    ``process_iter`` is the ``psutil`` protocol used by
+    :func:`app.audio.perapp_capture.resolve_target_pid` (a callable
+    taking an attrs list, yielding objects with ``.info`` holding
+    ``pid`` / ``name`` / ``ppid``); defaults to
+    ``psutil.process_iter``. Never raises: an unreadable table
+    degrades the tree search to a plain exe-name match.
+    """
+    try:
+        import psutil
+
+        iterator = (process_iter if process_iter is not None
+                    else psutil.process_iter)
+        rows = []
+        for proc in iterator(["pid", "name", "ppid"]):
+            try:
+                info = proc.info
+            except Exception:
+                continue
+            rows.append((info["pid"], info.get("name") or "",
+                         info.get("ppid")))
+        return rows
+    except Exception:
+        return []
+
+
+def _tree_pids(root_pids, rows) -> set[int]:
+    """Root pids plus all descendants, from ``rows`` (see ``_process_rows``).
+
+    Pure function over a snapshot; cycles cannot loop (``seen``).
+    """
+    children: dict[int | None, list[int]] = {}
+    for pid, _name, ppid in rows:
+        children.setdefault(ppid, []).append(pid)
+    seen = set(root_pids)
+    stack = list(root_pids)
+    while stack:
+        pid = stack.pop()
+        for child in children.get(pid, ()):
+            if child not in seen:
+                seen.add(child)
+                stack.append(child)
+    return seen
+
+
+def find_session_for_app(sessions: list[AudioSessionInfo],
+                         exe_name: str, *,
+                         process_iter=None) -> AudioSessionInfo | None:
+    """The audio session for an app: the session actually rendering.
+
+    A direct exe-name match wins first. Otherwise, any session
+    whose pid is in the process tree of a process with that exe
+    name: the renderer may be a child with a different exe (the
+    new Teams client's WebView2 host, a browser's audio service),
+    and the plain exe match would report "no session" for an app
+    that is playing sound — the Nov 24 2026 live-call report.
+    Active sessions win over idle ones in both passes. Never
+    raises; without a readable process table it is exactly
+    :func:`find_session`.
+    """
+    ordered = sorted(sessions, key=lambda s: s.state != "active")
+    direct = find_session(ordered, exe_name)
+    if direct is not None:
+        return direct
+    rows = _process_rows(process_iter)
+    if not rows:
+        return None
+    wanted = exe_name.lower()
+    roots = {pid for pid, name, _ppid in rows
+             if name.lower() == wanted}
+    if not roots:
+        return None
+    tree = _tree_pids(roots, rows)
+    for session in ordered:
+        if session.pid in tree:
+            return session
+    return None
+
+
 __all__ = [
     "AudioSessionInfo",
     "KNOWN_APP_NAMES",
@@ -357,6 +438,7 @@ __all__ = [
     "audio_sessions_available",
     "display_name_for_exe",
     "find_session",
+    "find_session_for_app",
     "list_audio_sessions",
     "prettify_exe_name",
 ]

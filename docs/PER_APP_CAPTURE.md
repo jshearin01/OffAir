@@ -91,10 +91,13 @@ are hand-defined in `app/audio/perapp_capture.py` from the SDK headers.
 
 ### Settings
 
-- **Auto** (default) — try Teams-only per-app capture; on any failure
-  (unavailable OS/build/package, Teams not running, activation error)
-  fall back to system-wide loopback with a warning. The recording is
-  never lost to an activation failure.
+- **Auto** (default) — try per-app capture for the target app;
+  on any failure (unavailable OS/build/package, app not running,
+  activation error) fall back to system-wide loopback with a
+  warning. The recording is never lost to an activation failure.
+  Exception: a Teams desktop target is recorded system-wide from
+  the start — process loopback returns silence for it even
+  mid-call (see the Teams desktop exception below).
 - **Teams only** — per-app capture or a loud failure. Use this when a
   silent fallback would be worse than no recording.
 - **System-wide loopback** — always the old behaviour (pre-Nov 8).
@@ -141,19 +144,46 @@ are hand-defined in `app/audio/perapp_capture.py` from the SDK headers.
   **tree root** (parent is not also a target process) is preferred,
   because `INCLUDE_TARGET_PROCESS_TREE` captures the root and its
   children.
-- **Silent-target warning**: if Teams is running but has no active
-  audio session yet (or an active but silent one), recording still
-  starts — the track stays silent until Teams plays audio — but the
-  session warning says why. The level meter shows the same thing.
+- **Silent-target warning**: if the target is running but has no
+  active audio session yet (or an active but silent one),
+  recording still starts — the track stays silent until the app
+  plays audio — but the session warning says why. The level
+  meter shows the same thing. This covers the paths that start
+  without asking (auto-detect, scheduled, unusable probe) for
+  non-Teams targets, and Teams in explicit per-app mode; a
+  Teams desktop target in Auto mode records system-wide
+  instead (see the Teams desktop exception below).
+- **Pre-record wait + per-cause dialog** (Nov 24 2026): Record
+  waits up to 5 s for the target's audio session (a Teams session
+  appears when a call connects) and only then asks, naming the
+  cause — "isn't running" versus "running but isn't playing any
+  sound" — instead of failing instantly on a session that has
+  not appeared *yet*. "Record anyway" captures system-wide;
+  Cancel records nothing. No silent fallback: per-app capture is
+  never silently replaced without the user choosing it.
+- **Teams desktop exception** (Nov 24 2026): WASAPI process
+  loopback returns silence for the Teams desktop client
+  (``ms-teams.exe``) even mid-call with active sessions —
+  Microsoft windows-classic-samples#414, reproduced on several
+  machines and Teams versions, and on the work PC Nov 10 + Nov 24
+  2026 — while device loopback captures it fine. ``"auto"`` mode
+  therefore records a Teams desktop target system-wide from the
+  start, with a warning in ``metadata.json`` saying why; explicit
+  ``"per-app"`` mode still attempts per-app (the user chose it).
+  The session search (direct exe match, else the app's process
+  tree — see ``find_session_for_app``) still applies to every
+  other app, and the activation target is the session's pid when
+  one is known rather than blindly the tree root.
 
 ## Failure modes
 
 | Situation | Behaviour |
 |---|---|
 | Not Windows / build < 20348 / pycaw missing | Per-app unavailable; `"auto"` uses loopback, `"per-app"` fails with the concrete reason |
-| Teams not running | No PID → `PerAppCaptureError`; `"auto"` falls back |
+| Teams not running | Manual Record: 5 s wait, then the dialog names it ("isn't running"); Record anyway falls back in `"auto"`, Cancel records nothing. Without the dialog (auto/scheduled/unusable probe): no PID → `PerAppCaptureError`; `"auto"` falls back, `"per-app"` fails loudly |
 | Activation fails (`E_ILLEGAL_METHOD_CALL`, timeout, …) | Error names the stage + HRESULT; `"auto"` falls back |
-| Teams running, no call yet | Capture runs; system track silent until Teams renders; warning recorded |
+| Teams running, no call yet | Record waits 5 s for the session; if none appears, the dialog names it ("running but isn't playing any sound") — Record anyway falls back, Cancel records nothing; joining the call inside the wait skips the dialog and starts the recording (per-app, except a Teams desktop target in Auto mode — next row). Paths that start without asking (auto/scheduled) run per-app with the silent-target warning instead |
+| Teams desktop meeting, live call, active session | Process loopback yields silence (platform limitation, #414) → `"auto"` records system-wide with the Teams warning; `"per-app"` mode attempts per-app (explicit choice) |
 | Teams exits mid-recording | Stream yields silence / errors; the mic track is unaffected; stop the recording and re-start. With auto-detect on, the watcher ends the recording when the session disappears and starts a new one if a new meeting begins. |
 | Target renders to a non-default output device | Capture still works (process loopback is not endpoint-tied); only the `describe_target_session` probe misses it |
 
@@ -175,12 +205,27 @@ Windows 11; Python 3.10+; this repo; Teams desktop client.
    `system.wav`: it must contain **only the remote side** (no YouTube
    audio). `mic.wav` is you; `combined.wav` is the mix.
 6. Negative tests:
-   - Teams **not running** → Record → warning + `mode`
-     `"system-loopback-fallback"` (auto fallback works).
-   - Settings → **Teams only**, Teams not running → Record fails with a
-     clear error (no silent fallback).
-   - Teams running but **idle** (no call) → Record → warning "no active
-     audio session yet"; system track silent until the call starts.
+   - Teams **not running** → Record → 5 s wait, then the dialog
+     "isn't running" → Record anyway → `mode`
+     `"system-loopback-fallback"` (auto fallback works);
+     Cancel → no recording.
+   - Settings → **Teams only**, Teams not running → Record → the
+     dialog first (as above); the loud failure with no silent
+     fallback is the start-time `PerAppCaptureError` when
+     per-app capture itself cannot start.
+   - Teams running but **idle** (no call) → Record → 5 s wait,
+     then the dialog "running but isn't playing any sound" →
+     Record anyway → loopback fallback; join the call inside
+     the wait → the dialog is skipped and recording starts
+     (system-wide for a Teams target in Auto mode — see the
+     Teams desktop exception above).
+   - Teams desktop meeting, **live call** (Auto mode) → Record →
+     system-wide loopback with the Teams warning in
+     `metadata.json` (`mode` `"system-loopback-fallback"`);
+     `system.wav` must contain the remote side. This is the
+     Nov 24 2026 fix for process loopback returning silence
+     for `ms-teams.exe` — per-app must NOT be attempted for
+     this target in Auto mode.
    - **44.1 kHz loopback device** (e.g. Remote Audio over RDP, or any
      endpoint whose mix format is 44.1 kHz): Settings → System-wide
      loopback → Record → recording starts, `system.wav` is 48 kHz mono

@@ -192,7 +192,10 @@ class SettingsDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[misc]
             "(WASAPI process loopback, Windows 10 build 20348+). "
             "Auto falls back to system-wide loopback with a warning "
             "when per-app is unavailable; Teams only fails loudly "
-            "instead, so a bad setup is never a silent recording."))
+            "instead, so a bad setup is never a silent recording. "
+            "Exception: the Teams desktop app always records "
+            "system-wide in Auto — process loopback returns silence "
+            "for it even mid-call (known Windows limitation)."))
 
         # Default recording source (Nov 20 2026, D4): the Record
         # view's Source dropdown is gone — this is the persisted

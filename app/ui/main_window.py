@@ -34,10 +34,11 @@ from app.audio.app_sessions import (
     OTHER_APP_SENTINEL,
     audio_sessions_available,
     display_name_for_exe,
-    find_session,
+    find_session_for_app,
     list_audio_sessions,
 )
 from app.audio.capture import CaptureState, DualCapture
+from app.audio.perapp_capture import resolve_target_pid
 from app.audio.mixer import mix_files
 from app.audio.auto_detect import MeetingWatcher, auto_detect_available
 from app.audio.devices import (
@@ -192,6 +193,7 @@ LIVE_FINALIZE_WAIT_SECONDS = 60.0
 if QT_AVAILABLE:
     from PyQt6.QtCore import (
         QDateTime,
+        QEventLoop,
         QObject,
         Qt,
         QThread,
@@ -923,6 +925,19 @@ _SILENCE_WINDOW_SECONDS = 10.0
 _SILENCE_PEAK_THRESHOLD = 0.005
 #: Peak at/above this counts as the mic being live.
 _MIC_LIVE_THRESHOLD = 0.01
+
+#: How long Record waits for the target app's audio session to
+#: appear before asking (seconds): a Teams audio session is
+#: transient — it exists only while Teams holds a render stream,
+#: so an idle Teams (no call connected yet) has no session at all
+#: and the pre-record probe finds nothing. The session appears
+#: within a second or two of the call connecting, so a short wait
+#: covers the race without making Record feel hung; past it, the
+#: no-session dialog names the cause. A zero bound means one probe
+#: and no waiting (the tests use this).
+_TARGET_SESSION_WAIT_SECONDS = 5.0
+#: Poll interval while waiting for the target session (seconds).
+_TARGET_SESSION_POLL_SECONDS = 0.5
 
 #: Hint under the near-live pane (restored when a new session loads,
 #: so a previous run's "Done: …" line never claims to be about the
@@ -2714,37 +2729,119 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
     def _target_has_audio_session(self, exe_name: str) -> bool:
         """True when ``exe_name`` has a render audio session now.
 
-        A probe failure returns True (fail open — a broken probe
-        is not evidence the app is silent, and must never block a
-        recording the user asked for).
+        Tree-aware: a session in the app's process tree counts
+        (the renderer may be a child with a different exe), not
+        just a session under the exe name itself. A probe failure
+        returns True (fail open — a broken probe is not evidence
+        the app is silent, and must never block a recording the
+        user asked for).
         """
         try:
             sessions = list_audio_sessions()
         except Exception:  # noqa: BLE001 — probe failure fails open
             logger.exception("Target-session probe failed")
             return True
-        return find_session(sessions, exe_name) is not None
+        return find_session_for_app(sessions, exe_name) is not None
 
-    def _confirm_record_without_session(self, display_name: str) -> bool:
+    def _target_process_running(self, exe_name: str) -> bool:
+        """True when a process with this exe name is running now.
+
+        Tells the no-session dialog which cause it is naming: a
+        running app with no session is silent *for now* (its
+        session appears when it plays sound), while an app that
+        is not running at all cannot gain one. Fail open (True)
+        on probe failure, like :meth:`_target_has_audio_session`.
+        """
+        try:
+            return resolve_target_pid([exe_name]) is not None
+        except Exception:  # noqa: BLE001 — probe failure fails open
+            logger.exception("Target-process probe failed")
+            return True
+
+    def _wait_for_target_session(self, exe_name: str) -> bool:
+        """Wait (bounded) for ``exe_name`` to gain an audio session.
+
+        Returns True as soon as the probe finds one — including on
+        the first probe, so the common case costs no delay. A
+        Teams session is transient (it exists only while Teams
+        holds a render stream), so an idle Teams has no session
+        until the call connects; failing instantly on that race
+        is the Nov 24 2026 report ("can't find any audio"). The
+        wait is :data:`_TARGET_SESSION_WAIT_SECONDS` at
+        :data:`_TARGET_SESSION_POLL_SECONDS` intervals, with
+        user input excluded from event processing (the window
+        repaints, but a second Record press cannot re-enter
+        ``on_record`` mid-wait). A zero bound probes once.
+        """
+        display_name = display_name_for_exe(exe_name)
+        if self._target_has_audio_session(exe_name):
+            return True
+        deadline = time.monotonic() + _TARGET_SESSION_WAIT_SECONDS
+        self.statusBar().showMessage(
+            f"Waiting for {display_name} to start playing sound…")
+        try:
+            while time.monotonic() < deadline:
+                app = QApplication.instance()
+                if app is not None:
+                    app.processEvents(
+                        QEventLoop.ProcessEventsFlag
+                        .ExcludeUserInputEvents)
+                time.sleep(_TARGET_SESSION_POLL_SECONDS)
+                if self._target_has_audio_session(exe_name):
+                    return True
+        finally:
+            # Never leave a stale "Waiting…" in the status bar for
+            # the dialog (or a cancelled Record) to sit under.
+            self.statusBar().clearMessage()
+        return False
+
+    @staticmethod
+    def _no_session_dialog_text(display_name: str,
+                                target_running: bool) -> tuple[str, str, str]:
+        """(title, text, informative) for the no-session dialog.
+
+        The two causes get their own wording: a running app that
+        is silent *for now* versus an app that is not running at
+        all. Pure function so the wording is unit-tested without
+        driving a modal dialog.
+        """
+        title = f"No audio from {display_name}"
+        if target_running:
+            text = (f"{display_name} is running but isn't playing "
+                    "any sound right now — its audio session "
+                    "appears when a call connects or it plays sound.")
+            informative = (
+                "Join the call first and try again — or record "
+                "anyway to capture everything you hear instead. "
+                "In “Record one app” mode a silent target records "
+                "silence.")
+        else:
+            text = (f"{display_name} isn't running right now, so it "
+                    "has no audio session to capture.")
+            informative = (
+                f"Start {display_name} and try again — or record "
+                "anyway to capture everything you hear instead.")
+        return title, text, informative
+
+    def _confirm_record_without_session(
+            self, display_name: str, *,
+            target_running: bool = True) -> bool:
         """Loud warning: the target app has no audio session.
 
         Returns True to record anyway (system-wide) or False to
         cancel. This is the dialog the work-PC failure needed: a
         target with no session records digital silence in per-app
         mode, so the user chooses explicitly instead of finding
-        out afterwards.
+        out afterwards. ``target_running`` selects the wording:
+        a running-but-silent app versus one that is not running.
         """
+        title, text, informative = self._no_session_dialog_text(
+            display_name, target_running)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle(f"No audio from {display_name}")
-        box.setText(
-            f"{display_name} has no audio session right now — it "
-            "may not be running, or not playing any sound.")
-        box.setInformativeText(
-            "Recording now would capture silence on the system "
-            "track in “Record one app” mode. Record anyway to "
-            "capture everything you hear instead, or Cancel and "
-            "start the app / play sound first.")
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setInformativeText(informative)
         record_anyway = box.addButton(
             "Record anyway (system-wide)",
             QMessageBox.ButtonRole.AcceptRole)
@@ -3476,10 +3573,12 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
         *configured* target (Teams), so that is what is captured —
         the picker's choice must not hijack a meeting the watcher
         detected. In "Record one app" mode on Windows, a target
-        with no audio session at all gets a loud warning dialog
-        first (record anyway, system-wide, or cancel) — a per-app
-        recording of a silent target is a recording of nothing,
-        and the user must choose that explicitly.
+        with no audio session at all is waited on briefly (the
+        session appears when a call connects) and then gets a
+        loud warning dialog (record anyway, system-wide, or
+        cancel) — a per-app recording of a silent target is a
+        recording of nothing, and the user must choose that
+        explicitly.
 
         The session's recording source is resolved the same way:
         the persisted default source (Settings) overrides
@@ -3536,10 +3635,14 @@ class MainWindow(QMainWindow if QT_AVAILABLE else object):  # type: ignore[misc]
             # proceeds as before (DualCapture still falls back to
             # loopback with a warning when per-app fails).
             available, _reason = audio_sessions_available()
-            if available and not self._target_has_audio_session(
+            if available and not self._wait_for_target_session(
                     process_name):
+                # Still no session after the wait: ask, naming the
+                # cause (not running vs running but silent).
                 if not self._confirm_record_without_session(
-                        display_name_for_exe(process_name)):
+                        display_name_for_exe(process_name),
+                        target_running=self._target_process_running(
+                            process_name)):
                     return
                 # The user chose to record anyway: system-wide for
                 # this recording, loudly (the label below says so).

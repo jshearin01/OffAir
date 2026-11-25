@@ -125,6 +125,33 @@ def test_dual_capture_produces_three_files(tmp_path):
     assert len(mic_samples) > 0
 
 
+def test_dual_capture_auto_routes_teams_desktop_to_loopback(
+        tmp_path, monkeypatch):
+    """Auto + Teams desktop target = system-wide loopback with a
+    warning saying why (process loopback returns silence for
+    ms-teams.exe). Any other app still gets per-app capture when
+    available. Availability is faked: on this Linux VM per-app is
+    unavailable, which would route everything to loopback."""
+    import app.audio.perapp_capture as perapp
+    from app.audio.perapp_capture import ProcessLoopbackCapture
+
+    monkeypatch.setattr(perapp, "per_app_capture_available",
+                        lambda: (True, None))
+    teams = DualCapture(
+        tmp_path / "teams", process_name="ms-teams.exe",
+        capture_system_mode="auto",
+        chunk_source_factory=lambda kind: _chunks(10))
+    assert isinstance(teams.system, PerAppCapture)
+    assert teams.mode == "system-loopback-fallback"
+    assert teams.warning and "Teams desktop app" in teams.warning
+    chrome = DualCapture(
+        tmp_path / "chrome", process_name="chrome.exe",
+        capture_system_mode="auto",
+        chunk_source_factory=lambda kind: _chunks(10))
+    assert isinstance(chrome.system, ProcessLoopbackCapture)
+    assert chrome.warning is None
+
+
 def test_capture_import_does_not_require_windows_or_pyqt(tmp_path):
     import app.audio.capture as capture_module
     assert capture_module.WASAPICapture is not None

@@ -67,6 +67,13 @@ from ``start()`` — never a silent dead track):
 * target running but not rendering yet → activation succeeds and
   the stream yields silence until it does; ``describe_target_session``
   reports that state so the UI can warn instead of looking broken.
+* the Teams desktop client (``ms-teams.exe``) is the known
+  exception: process loopback returns silence for it even mid-call
+  with active sessions (Microsoft windows-classic-samples#414;
+  Nov 10 + Nov 24 2026 on the work PC) — ``"auto"`` mode records
+  it system-wide instead; see :data:`TEAMS_DESKTOP_EXES`. The
+  activation target is the session's pid when one is known
+  (:func:`resolve_capture_pid`), not blindly the tree root.
 
 The microphone side is untouched: the mic track was always
 per-user. Only the system track changes.
@@ -313,14 +320,62 @@ def resolve_target_pid(process_names: list[str],
     return {"pid": chosen["pid"], "name": chosen["name"]}
 
 
-def select_system_capture_class(capture_system_mode: str):
+def resolve_capture_pid(process_names: list[str], *,
+                        sessions=None, process_iter=None) -> dict | None:
+    """PID to activate process loopback for: the pid actually rendering.
+
+    Prefers the pid of the app's audio session (direct exe match,
+    else a session in the app's process tree — see
+    :func:`app.audio.app_sessions.find_session_for_app`), because
+    activating the tree root can target a tree that holds no audio:
+    Teams runs several ``ms-teams.exe`` trees and the root
+    heuristic picks ``roots[0]``. Falls back to
+    :func:`resolve_target_pid` (tree root) when no session is
+    known. ``sessions`` is an explicit
+    :func:`app.audio.app_sessions.list_audio_sessions` result for
+    tests; ``None`` lists live (``[]`` off Windows / on failure —
+    never raises for a listing failure).
+    """
+    if sessions is None:
+        try:
+            from app.audio.app_sessions import list_audio_sessions
+
+            sessions = list_audio_sessions()
+        except Exception:
+            sessions = []
+    from app.audio.app_sessions import find_session_for_app
+
+    for name in process_names:
+        info = find_session_for_app(sessions, name,
+                                    process_iter=process_iter)
+        if info is not None:
+            return {"pid": info.pid, "name": info.exe_name}
+    return resolve_target_pid(process_names, process_iter)
+
+
+#: Exes of the Teams desktop client. WASAPI process loopback
+#: returns silence for it even mid-call with active sessions
+#: (Microsoft windows-classic-samples#414, reproduced on several
+#: machines/versions; Nov 10 + Nov 24 2026 on the work PC), while
+#: device loopback captures it fine — so ``"auto"`` mode records
+#: Teams desktop meetings system-wide instead of trusting per-app
+#: capture. Explicit ``"per-app"`` mode still tries per-app: the
+#: user chose it, and a loud activation failure stays loud.
+TEAMS_DESKTOP_EXES = frozenset({"ms-teams.exe", "teams.exe"})
+
+
+def select_system_capture_class(capture_system_mode: str,
+                                process_name: str | None = None):
     """Which system-capture class :class:`DualCapture` should use.
 
     ``"per-app"`` → :class:`ProcessLoopbackCapture` (fails loudly if
     it cannot start); ``"loopback"`` → the old
     :class:`app.audio.capture.PerAppCapture` (system-wide, always
     works); ``"auto"`` (default) → per-app when available, else the
-    loopback class. Never raises; unknown modes fall back to ``"auto"``.
+    loopback class — except the Teams desktop client (see
+    :data:`TEAMS_DESKTOP_EXES`), which ``"auto"`` records
+    system-wide: process loopback returns silence for it. Never
+    raises; unknown modes fall back to ``"auto"``.
     """
     from app.audio.capture import PerAppCapture
 
@@ -328,6 +383,8 @@ def select_system_capture_class(capture_system_mode: str):
         return PerAppCapture
     if capture_system_mode == "per-app":
         return ProcessLoopbackCapture
+    if (process_name or "").lower() in TEAMS_DESKTOP_EXES:
+        return PerAppCapture
     available, _ = per_app_capture_available()
     return ProcessLoopbackCapture if available else PerAppCapture
 
@@ -890,8 +947,9 @@ class ProcessLoopbackCapture(WASAPICapture):
         self.warning: str | None = None
         # Resolve the target now (same as PerAppCapture): the PID is
         # needed before activation, and the UI can report "not running"
-        # before Record is pressed.
-        info = resolve_target_pid(self.process_names)
+        # before Record is pressed. The session's pid wins over the
+        # tree root — it is the process actually rendering audio.
+        info = resolve_capture_pid(self.process_names)
         self.process_info = info
         if info is not None:
             self._pid = info["pid"]
@@ -915,7 +973,7 @@ class ProcessLoopbackCapture(WASAPICapture):
                 f"Per-app capture unavailable: {reason}")
         if self._pid is None:
             # Re-resolve: the process may have started since construction.
-            info = resolve_target_pid(self.process_names)
+            info = resolve_capture_pid(self.process_names)
             self.process_info = info
             if info is not None:
                 self._pid = info["pid"]

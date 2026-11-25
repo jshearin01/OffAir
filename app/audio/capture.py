@@ -758,8 +758,11 @@ class DualCapture:
     default ``"auto"``) decides the default ``system_cls`` when none is
     passed explicitly: per-app capture
     (:class:`app.audio.perapp_capture.ProcessLoopbackCapture`) when
-    available, else :class:`PerAppCapture`. If the per-app capture
-    fails at ``start()`` in ``"auto"`` mode, ``start()`` falls back to
+    available, else :class:`PerAppCapture`. Exception: in ``"auto"``
+    mode a Teams desktop target (``ms-teams.exe``) is recorded
+    system-wide from the start — process loopback returns silence
+    for it even mid-call — with :attr:`warning` saying why. If the
+    per-app capture fails at ``start()`` in ``"auto"`` mode, ``start()`` falls back to
     the system-wide loopback track (the mic keeps running) and
     ``mode`` / ``warning`` are updated to the fallback — the recording
     is never lost to an activation failure. In ``"per-app"`` mode the
@@ -797,10 +800,26 @@ class DualCapture:
         # import: perapp_capture imports this module at module level.
         self._capture_system_mode = (
             capture_system_mode or CAPTURE_SYSTEM_MODE_DEFAULT)
+        # Teams-desktop guard: in "auto" mode the selector records
+        # the Teams desktop client system-wide (process loopback
+        # returns silence for it) — remember that routing happened
+        # so the warning below can say why (only when per-app was
+        # otherwise available: an unavailable per-app path already
+        # explains a loopback recording on its own).
+        teams_routed = False
         if system_cls is _DEFAULT_SYSTEM_CLS:
-            from app.audio.perapp_capture import select_system_capture_class
+            from app.audio.perapp_capture import (
+                TEAMS_DESKTOP_EXES,
+                per_app_capture_available,
+                select_system_capture_class,
+            )
             system_cls = select_system_capture_class(
-                self._capture_system_mode)
+                self._capture_system_mode, process_name)
+            if (self._capture_system_mode == "auto"
+                    and system_cls is PerAppCapture
+                    and (process_name or "").lower() in TEAMS_DESKTOP_EXES
+                    and per_app_capture_available()[0]):
+                teams_routed = True
         # Construction kwargs for the system capture, kept so start()
         # can rebuild it as the loopback fallback if per-app fails.
         self._system_kwargs = {
@@ -825,6 +844,16 @@ class DualCapture:
                          else getattr(self.system, "mode", "system-loopback-fallback"))
             self.warning = (warning if warning is not None
                             else getattr(self.system, "warning", None))
+        if teams_routed and warning is None:
+            # The recording is system-wide loopback, but the user
+            # asked for one app — the metadata must say this was
+            # deliberate (Teams desktop + process loopback = silence),
+            # not the generic loopback warning. An explicit caller
+            # warning still wins.
+            self.warning = (
+                "Teams desktop app: per-app capture returns silence "
+                "for it on Windows, so this recording is system-wide "
+                "loopback instead (everything you hear).")
         self._started = False
 
     def start(self, preroll_samples: dict | None = None) -> None:

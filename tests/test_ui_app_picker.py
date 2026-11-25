@@ -330,15 +330,21 @@ def test_record_without_session_warns_and_cancels(
         assert win.selected_process_name() == "ms-teams.exe"
         asked: list = []
 
-        def _cancel(name):
-            asked.append(name)
+        def _cancel(name, **kwargs):
+            asked.append((name, kwargs))
             return False
 
+        # No waiting in this test: the probe reports no session
+        # once, the dialog is reached immediately. The process
+        # probe is pinned (not running) so the test is hermetic.
+        monkeypatch.setattr(mw, "_TARGET_SESSION_WAIT_SECONDS", 0)
+        monkeypatch.setattr(win, "_target_process_running",
+                            lambda exe: False)
         monkeypatch.setattr(
             win, "_confirm_record_without_session", _cancel)
         win.on_record()
         qapp.processEvents()
-        assert asked == ["Microsoft Teams"]
+        assert asked == [("Microsoft Teams", {"target_running": False})]
         # Cancelled: no capture started, no session folder created.
         assert win.capture is None
         assert win.session_dir is None
@@ -360,14 +366,198 @@ def test_record_without_session_records_anyway_system_wide(
         win._manual_process_name = "ms-teams.exe"
         win._refresh_app_picker()
         qapp.processEvents()
+        monkeypatch.setattr(mw, "_TARGET_SESSION_WAIT_SECONDS", 0)
         monkeypatch.setattr(
-            win, "_confirm_record_without_session", lambda name: True)
+            win, "_confirm_record_without_session",
+            lambda name, **kwargs: True)
         win.on_record()
         qapp.processEvents()
         assert isinstance(win.capture, _FakeCapture)
         # The user's explicit choice: system-wide for this recording.
         assert win.capture.capture_system_mode == "loopback"
         assert win.capture.process_name == "ms-teams.exe"
+    finally:
+        win.close()
+
+
+def test_record_waits_for_session_then_records_per_app(
+        qapp, tmp_path, monkeypatch):
+    """A session appearing during the wait means no dialog at all.
+
+    Teams' session is transient: it appears when the call
+    connects, which may be just after Record is pressed. The
+    probe reports nothing, then a session on the next poll —
+    recording starts in the requested mode, never system-wide.
+    """
+    import app.ui.main_window as mw
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(mw, "audio_sessions_available",
+                        lambda: (True, None))
+    monkeypatch.setattr(mw, "DualCapture", _FakeCapture)
+    win = _make_window(monkeypatch, tmp_path, sessions=[])
+    try:
+        win._manual_process_name = "ms-teams.exe"
+        win._refresh_app_picker()
+        qapp.processEvents()
+        probes = iter([False, True])
+        monkeypatch.setattr(win, "_target_has_audio_session",
+                            lambda exe: next(probes))
+
+        def _must_not_ask(name, **kwargs):
+            raise AssertionError("dialog must not appear: "
+                                 "the session arrived during the wait")
+
+        monkeypatch.setattr(
+            win, "_confirm_record_without_session", _must_not_ask)
+        win.on_record()
+        qapp.processEvents()
+        assert isinstance(win.capture, _FakeCapture)
+        # The requested mode is kept: per-app is tried, not loopback.
+        assert win.capture.capture_system_mode == "auto"
+        assert win.capture.process_name == "ms-teams.exe"
+    finally:
+        win.close()
+
+
+def test_no_session_dialog_text_names_the_cause():
+    """Running-but-silent vs not-running get their own wording."""
+    from app.ui.main_window import MainWindow
+
+    title, text, informative = MainWindow._no_session_dialog_text(
+        "Microsoft Teams", target_running=True)
+    assert title == "No audio from Microsoft Teams"
+    assert "is running but isn't playing" in text
+    assert "Join the call first" in informative
+    title, text, informative = MainWindow._no_session_dialog_text(
+        "Microsoft Teams", target_running=False)
+    assert title == "No audio from Microsoft Teams"
+    assert "isn't running" in text
+    assert "Start Microsoft Teams" in informative
+
+
+def test_record_without_session_running_target_names_cause(
+        qapp, tmp_path, monkeypatch):
+    """Dialog is told the app is running but silent (not absent)."""
+    import app.ui.main_window as mw
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(mw, "audio_sessions_available",
+                        lambda: (True, None))
+    monkeypatch.setattr(mw, "DualCapture", _FakeCapture)
+    win = _make_window(monkeypatch, tmp_path, sessions=[])
+    try:
+        win._manual_process_name = "ms-teams.exe"
+        win._refresh_app_picker()
+        qapp.processEvents()
+        monkeypatch.setattr(win, "_wait_for_target_session",
+                            lambda exe: False)
+        monkeypatch.setattr(win, "_target_process_running",
+                            lambda exe: True)
+        asked: list = []
+
+        def _cancel(name, **kwargs):
+            asked.append(kwargs)
+            return False
+
+        monkeypatch.setattr(
+            win, "_confirm_record_without_session", _cancel)
+        win.on_record()
+        qapp.processEvents()
+        assert asked == [{"target_running": True}]
+        assert win.capture is None
+    finally:
+        win.close()
+
+
+def test_record_finds_session_in_app_process_tree(
+        qapp, tmp_path, monkeypatch):
+    """The rendering session belongs to a child process with a
+    different exe (Teams' WebView2 host): the probe must still
+    find it, with no dialog and per-app capture attempted.
+
+    The plain exe-name match reports nothing here — only the
+    process-tree search finds the session. This is the Nov 24
+    2026 live-call case (session active, sound playing).
+    """
+    import app.ui.main_window as mw
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(mw, "audio_sessions_available",
+                        lambda: (True, None))
+    monkeypatch.setattr(mw, "DualCapture", _FakeCapture)
+    renderer = AudioSessionInfo("msedgewebview2.exe", "Teams", 300,
+                                "active", 0.5)
+    win = _make_window(monkeypatch, tmp_path, sessions=[renderer])
+    try:
+        win._manual_process_name = "ms-teams.exe"
+        win._refresh_app_picker()
+        qapp.processEvents()
+        # Pick the Teams row explicitly: the first session row is
+        # the renderer child, and the default selection keeps it.
+        win.process_combo.setCurrentIndex(
+            win._picker_index_for("ms-teams.exe"))
+        qapp.processEvents()
+        assert win.selected_process_name() == "ms-teams.exe"
+
+        class _FakeProc:
+            def __init__(self, pid, name, ppid):
+                self.info = {"pid": pid, "name": name, "ppid": ppid}
+
+        def _fake_process_iter(attrs):
+            return [
+                _FakeProc(1, "explorer.exe", 0),
+                _FakeProc(100, "ms-teams.exe", 1),
+                _FakeProc(300, "msedgewebview2.exe", 100),
+            ]
+
+        monkeypatch.setattr("psutil.process_iter", _fake_process_iter)
+
+        def _must_not_ask(name, **kwargs):
+            raise AssertionError(
+                "dialog must not appear: the renderer child holds "
+                "the session for the picked app")
+
+        monkeypatch.setattr(
+            win, "_confirm_record_without_session", _must_not_ask)
+        win.on_record()
+        qapp.processEvents()
+        assert isinstance(win.capture, _FakeCapture)
+        assert win.capture.capture_system_mode == "auto"
+        assert win.capture.process_name == "ms-teams.exe"
+    finally:
+        win.close()
+
+
+def test_broken_session_probe_fails_open(qapp, tmp_path, monkeypatch):
+    """A probe exception never blocks a recording (no wait, no dialog)."""
+    import app.ui.main_window as mw
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(mw, "audio_sessions_available",
+                        lambda: (True, None))
+    monkeypatch.setattr(mw, "DualCapture", _FakeCapture)
+    win = _make_window(monkeypatch, tmp_path, sessions=[])
+    try:
+        win._manual_process_name = "ms-teams.exe"
+        win._refresh_app_picker()
+        qapp.processEvents()
+
+        def _boom(**kwargs):
+            raise RuntimeError("enumerator broken")
+
+        monkeypatch.setattr(mw, "list_audio_sessions", _boom)
+        assert win._target_has_audio_session("ms-teams.exe") is True
+        assert win._wait_for_target_session("ms-teams.exe") is True
+        def _must_not_ask(name, **kwargs):
+            raise AssertionError("dialog must not appear: "
+                                 "a broken probe fails open")
+
+        monkeypatch.setattr(
+            win, "_confirm_record_without_session", _must_not_ask)
+        win.on_record()
+        qapp.processEvents()
+        assert isinstance(win.capture, _FakeCapture)
     finally:
         win.close()
 

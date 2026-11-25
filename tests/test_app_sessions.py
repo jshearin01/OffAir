@@ -16,6 +16,7 @@ from app.audio.app_sessions import (
     audio_sessions_available,
     display_name_for_exe,
     find_session,
+    find_session_for_app,
     list_audio_sessions,
     prettify_exe_name,
 )
@@ -50,6 +51,92 @@ def test_find_session_case_insensitive():
                                  "active", 0.4)]
     assert find_session(sessions, "CHROME.EXE") is sessions[0]
     assert find_session(sessions, "ms-teams.exe") is None
+
+
+# ------------------------------------------------- tree-aware search -------
+class _FakeProc:
+    """One process-table row, psutil protocol (``.info`` dict)."""
+
+    def __init__(self, pid, name, ppid):
+        self.info = {"pid": pid, "name": name, "ppid": ppid}
+
+
+def _fake_process_iter(procs):
+    def _iter(attrs):
+        return list(procs)
+
+    return _iter
+
+
+def _teams_tree():
+    """ms-teams.exe root (100) + WebView2 renderer child (300)."""
+    return [
+        _FakeProc(1, "explorer.exe", 0),
+        _FakeProc(100, "ms-teams.exe", 1),
+        _FakeProc(300, "msedgewebview2.exe", 100),
+    ]
+
+
+def test_find_session_for_app_direct_match_wins():
+    child = AudioSessionInfo("msedgewebview2.exe", "Teams", 300,
+                             "active", 0.5)
+    direct = AudioSessionInfo("ms-teams.exe", "Microsoft Teams", 100,
+                              "idle", 0.0)
+    found = find_session_for_app(
+        [child, direct], "ms-teams.exe",
+        process_iter=_fake_process_iter(_teams_tree()))
+    assert found is direct
+
+
+def test_find_session_for_app_finds_child_process_session():
+    # The only session belongs to the renderer child (different
+    # exe): the plain exe match reports nothing, the tree search
+    # finds it. This is the Nov 24 2026 live-call case.
+    child = AudioSessionInfo("msedgewebview2.exe", "Teams", 300,
+                             "active", 0.5)
+    found = find_session_for_app(
+        [child], "ms-teams.exe",
+        process_iter=_fake_process_iter(_teams_tree()))
+    assert found is child
+
+
+def test_find_session_for_app_prefers_active_in_tree():
+    idle = AudioSessionInfo("msedgewebview2.exe", "Teams", 300,
+                            "idle", 0.0)
+    active = AudioSessionInfo("msedgewebview2.exe", "Teams", 301,
+                              "active", 0.4)
+    procs = _teams_tree() + [_FakeProc(301, "msedgewebview2.exe", 100)]
+    found = find_session_for_app(
+        [idle, active], "ms-teams.exe",
+        process_iter=_fake_process_iter(procs))
+    assert found is active
+
+
+def test_find_session_for_app_no_match():
+    other = AudioSessionInfo("chrome.exe", "Google Chrome", 200,
+                             "active", 0.4)
+    assert find_session_for_app(
+        [other], "ms-teams.exe",
+        process_iter=_fake_process_iter(_teams_tree())) is None
+    # No process with the exe name at all: no tree to search.
+    assert find_session_for_app(
+        [other], "zoom.exe",
+        process_iter=_fake_process_iter(_teams_tree())) is None
+
+
+def test_find_session_for_app_process_table_failure_falls_back():
+    direct = AudioSessionInfo("ms-teams.exe", "Microsoft Teams", 100,
+                              "active", 0.4)
+
+    def _boom(attrs):
+        raise RuntimeError("process table unreadable")
+
+    # Direct match still works; a missing direct match degrades
+    # to None instead of raising.
+    assert find_session_for_app(
+        [direct], "ms-teams.exe", process_iter=_boom) is direct
+    assert find_session_for_app(
+        [], "ms-teams.exe", process_iter=_boom) is None
 
 
 @pytest.mark.skipif(sys.platform == "win32",

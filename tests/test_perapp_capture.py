@@ -48,6 +48,7 @@ from app.audio.perapp_capture import (
     VT_BLOB,
     PerAppCaptureError,
     ProcessLoopbackCapture,
+    TEAMS_DESKTOP_EXES,
     _ActivationParams,
     _PropVariantBlob,
     _convert_mix_chunk,
@@ -55,6 +56,7 @@ from app.audio.perapp_capture import (
     build_activation_params,
     describe_target_session,
     per_app_capture_available,
+    resolve_capture_pid,
     resolve_target_pid,
     select_system_capture_class,
 )
@@ -201,6 +203,76 @@ def test_select_system_capture_class():
         if per_app_capture_available()[0] else PerAppCapture)
     if sys.platform != "win32":
         assert select_system_capture_class("auto") is PerAppCapture
+
+
+def test_select_system_capture_class_teams_desktop_auto_is_loopback(
+        monkeypatch):
+    """Auto mode never trusts per-app capture for the Teams desktop
+    client: process loopback returns silence for it even mid-call
+    (Microsoft windows-classic-samples#414), while device loopback
+    captures it. Explicit per-app mode still tries per-app."""
+    import app.audio.perapp_capture as perapp
+
+    assert "ms-teams.exe" in TEAMS_DESKTOP_EXES
+    monkeypatch.setattr(perapp, "per_app_capture_available",
+                        lambda: (True, None))
+    assert select_system_capture_class(
+        "auto", "ms-teams.exe") is PerAppCapture
+    assert select_system_capture_class(
+        "auto", "MS-TEAMS.EXE") is PerAppCapture
+    assert select_system_capture_class(
+        "auto", "chrome.exe") is ProcessLoopbackCapture
+    assert select_system_capture_class(
+        "per-app", "ms-teams.exe") is ProcessLoopbackCapture
+    assert select_system_capture_class(
+        "loopback", "ms-teams.exe") is PerAppCapture
+
+
+# ------------------------------------------------- session-pid resolution --
+def _teams_tree_procs():
+    return [
+        _FakeProc(1, "explorer.exe", 0),
+        _FakeProc(100, "ms-teams.exe", 1),
+        _FakeProc(200, "ms-teams.exe", 1),
+        _FakeProc(300, "msedgewebview2.exe", 100),
+    ]
+
+
+def test_resolve_capture_pid_prefers_the_rendering_session():
+    from app.audio.app_sessions import AudioSessionInfo
+
+    # Two ms-teams.exe trees (roots 100 and 200); the call renders
+    # in tree 200. The root heuristic would pick 100; the session
+    # pid (200) is the one actually rendering.
+    sessions = [AudioSessionInfo("ms-teams.exe", "Microsoft Teams",
+                                 200, "active", 0.5)]
+    assert resolve_capture_pid(
+        ["ms-teams.exe"], sessions=sessions,
+        process_iter=_fake_iter(_teams_tree_procs())) == {
+            "pid": 200, "name": "ms-teams.exe"}
+
+
+def test_resolve_capture_pid_prefers_child_tree_session():
+    from app.audio.app_sessions import AudioSessionInfo
+
+    sessions = [AudioSessionInfo("msedgewebview2.exe", "Teams", 300,
+                                 "active", 0.5)]
+    assert resolve_capture_pid(
+        ["ms-teams.exe"], sessions=sessions,
+        process_iter=_fake_iter(_teams_tree_procs())) == {
+            "pid": 300, "name": "msedgewebview2.exe"}
+
+
+def test_resolve_capture_pid_falls_back_to_tree_root():
+    # No session known: the tree-root heuristic, unchanged.
+    assert resolve_capture_pid(
+        ["ms-teams.exe"], sessions=[],
+        process_iter=_fake_iter(_teams_tree_procs())) == {
+            "pid": 100, "name": "ms-teams.exe"}
+    # A listing failure (sessions=None on this Linux VM lists [])
+    # degrades to the same fallback instead of raising.
+    assert resolve_capture_pid(
+        ["definitely-not-a-real-app.exe"], sessions=None) is None
 
 
 # ------------------------------------------------------------ fake streams --

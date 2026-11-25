@@ -156,16 +156,21 @@ The Record view keeps only what recording needs: the **App** picker, the capture
   carries everything playing on the machine; the mode that actually
   ran is recorded in `metadata.json`, and the Settings picker lets
   you force "Teams only" (fail loudly instead of falling back) or
-  "System-wide loopback". Per-app capture is verified on real Windows
+  "System-wide loopback". Known exception: the Teams desktop app
+  itself — process loopback returns silence for it even mid-call,
+  so Auto records Teams meetings system-wide, with a warning.
+  Per-app capture is verified on real Windows
   (Nov 8 2026, Windows 11 VM): a 440 Hz tone player as the target
   came back a clean 440.0 Hz on the per-app track and on the fallback
   track. A real Teams meeting is still the open gate for the whole
   pipeline (see
   [docs/PER_APP_CAPTURE.md](docs/PER_APP_CAPTURE.md)).
 - **Two loud warnings instead of a silent recording.** If the picked
-  app has no audio session at all when you press Record (not
-  running, or not playing sound), OffAir asks first — "Record
-  anyway (system-wide)" or Cancel — instead of recording silence.
+  app has no audio session when you press Record, OffAir waits a
+  few seconds for one to appear (a call connecting creates it),
+  then asks — naming the cause ("isn't running" vs "running but
+  not playing sound") — "Record anyway (system-wide)" or Cancel,
+  instead of recording silence.
   And while recording, if the system track stays silent for ~10 s
   while the mic is live, the status line says so ("No system audio
   detected — check the target app is playing sound and the right
